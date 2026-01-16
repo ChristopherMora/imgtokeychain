@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import multer from 'multer'
+import path from 'path'
 import { createJob, getJob, downloadJob } from '../controllers/jobsController'
 import { validateFile } from '../middleware/validateFile'
 import { rateLimiter } from '../middleware/rateLimiter'
@@ -7,8 +8,9 @@ import { rateLimiter } from '../middleware/rateLimiter'
 const router = Router()
 
 // Multer configuration
+const STORAGE_PATH = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../../storage')
 const upload = multer({
-  dest: '/app/storage/uploads',
+  dest: path.join(STORAGE_PATH, 'uploads'),
   limits: {
     fileSize: parseInt(process.env.MAX_FILE_SIZE || '5242880'), // 5MB
   },

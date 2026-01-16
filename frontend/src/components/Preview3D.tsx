@@ -8,20 +8,69 @@ import * as THREE from 'three'
 interface Preview3DProps {
   jobId: string
   status?: string
+  dominantColors?: string[]
 }
 
-function STLModel({ stlData }: { stlData: ArrayBuffer }) {
+function STLModel({ stlData, dominantColors }: { stlData: ArrayBuffer; dominantColors?: string[] }) {
   const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null)
   
+  // ASCII STL parser
+  const parseAsciiSTL = (buffer: ArrayBuffer): THREE.BufferGeometry => {
+    const text = new TextDecoder().decode(buffer)
+    const vertices: number[] = []
+    const normals: number[] = []
+    
+    // Match all vertices and normals
+    const vertexPattern = /vertex\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)/g
+    const normalPattern = /facet\s+normal\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)/g
+    
+    let normalMatch
+    const normalList: number[][] = []
+    while ((normalMatch = normalPattern.exec(text)) !== null) {
+      normalList.push([parseFloat(normalMatch[1]), parseFloat(normalMatch[3]), parseFloat(normalMatch[5])])
+    }
+    
+    let vertexMatch
+    let facetIndex = 0
+    let vertexInFacet = 0
+    
+    while ((vertexMatch = vertexPattern.exec(text)) !== null) {
+      vertices.push(
+        parseFloat(vertexMatch[1]),
+        parseFloat(vertexMatch[3]),
+        parseFloat(vertexMatch[5])
+      )
+      
+      // Each facet has 3 vertices, all share the same normal
+      if (normalList[facetIndex]) {
+        normals.push(...normalList[facetIndex])
+      }
+      
+      vertexInFacet++
+      if (vertexInFacet === 3) {
+        vertexInFacet = 0
+        facetIndex++
+      }
+    }
+    
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
+    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+    geometry.computeBoundingBox()
+    
+    return geometry
+  }
+  
   useEffect(() => {
-    // Parse STL manually (simple binary STL parser)
+    // Parse STL (supports both ASCII and binary formats)
     const parseSTL = (buffer: ArrayBuffer): THREE.BufferGeometry => {
       const view = new DataView(buffer)
-      const isAscii = buffer.byteLength > 80 && 
-                      new TextDecoder().decode(buffer.slice(0, 5)) === 'solid'
+      const text = new TextDecoder().decode(buffer.slice(0, 80))
+      const isAscii = /^solid/i.test(text.trim())
       
       if (isAscii) {
-        throw new Error('ASCII STL not supported, use binary STL')
+        // Parse ASCII STL
+        return parseAsciiSTL(buffer)
       }
       
       // Binary STL format
@@ -76,14 +125,19 @@ function STLModel({ stlData }: { stlData: ArrayBuffer }) {
   const maxDim = Math.max(size.x, size.y, size.z)
   const scale = 3 / maxDim
   
+  // Use dominant color or default blue
+  const modelColor = dominantColors && dominantColors.length > 0 
+    ? dominantColors[0] 
+    : '#0ea5e9'
+  
   return (
     <mesh geometry={geometry} scale={scale}>
-      <meshStandardMaterial color="#0ea5e9" metalness={0.3} roughness={0.4} />
+      <meshStandardMaterial color={modelColor} metalness={0.3} roughness={0.4} />
     </mesh>
   )
 }
 
-export default function Preview3D({ jobId, status }: Preview3DProps) {
+export default function Preview3D({ jobId, status, dominantColors }: Preview3DProps) {
   const [stlData, setStlData] = useState<ArrayBuffer | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -157,7 +211,7 @@ export default function Preview3D({ jobId, status }: Preview3DProps) {
 
         {/* STL Model */}
         <Suspense fallback={null}>
-          <STLModel stlData={stlData} />
+          <STLModel stlData={stlData} dominantColors={dominantColors} />
         </Suspense>
 
         {/* Grid */}

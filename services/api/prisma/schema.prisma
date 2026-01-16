@@ -55,6 +55,9 @@ model Job {
   svgPath              String? @map("svg_path")
   stlPath              String? @map("stl_path")
   
+  // Colores dominantes extraídos
+  dominantColors       String[] @default([]) @map("dominant_colors")
+  
   // Timestamps
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")

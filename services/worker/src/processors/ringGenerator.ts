@@ -5,7 +5,7 @@ import path from 'path'
 import { logger } from '../utils/logger'
 
 const execAsync = promisify(exec)
-const STORAGE_PATH = process.env.STORAGE_PATH || '/app/storage'
+const STORAGE_PATH = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../../storage')
 
 interface RingParams {
   diameter: number
@@ -65,7 +65,7 @@ union() {
     await fs.writeFile(scadPath, scadScript)
     logger.info(`Ring OpenSCAD script created: ${scadPath}`)
 
-    // Run OpenSCAD
+    // Run OpenSCAD (defaults to binary format in this version)
     const command = `openscad -o "${outputPath}" "${scadPath}"`
     
     logger.info(`Running OpenSCAD with ring: ${command}`)

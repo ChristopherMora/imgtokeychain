@@ -5,12 +5,15 @@ import path from 'path'
 import { logger } from '../utils/logger'
 
 const execAsync = promisify(exec)
-const STORAGE_PATH = process.env.STORAGE_PATH || '/app/storage'
+const STORAGE_PATH = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../../storage')
 
 interface StlParams {
   width: number
   height: number
   thickness: number
+  borderEnabled?: boolean
+  borderThickness?: number
+  reliefEnabled?: boolean
 }
 
 export const svgToStl = async (
@@ -22,20 +25,68 @@ export const svgToStl = async (
     const outputPath = path.join(STORAGE_PATH, 'processed', `${jobId}.stl`)
     const scadPath = path.join(STORAGE_PATH, 'temp', `${jobId}.scad`)
 
-    // Create OpenSCAD script
-    const scadScript = `
-// Generated OpenSCAD script for ${jobId}
+    const borderEnabled = params.borderEnabled ?? true
+    const borderThickness = params.borderThickness || 2
+    const reliefEnabled = params.reliefEnabled ?? false
+    
+    let scadScript: string
+    
+    if (borderEnabled && reliefEnabled) {
+      // Modo con borde Y relieve
+      const baseThickness = 1
+      const reliefHeight = params.thickness - baseThickness
+      
+      scadScript = `
+// Llavero con borde y relieve ${jobId}
+difference() {
+  // Base con borde redondeado
+  translate([0, 0, ${baseThickness/2}])
+    linear_extrude(height = ${baseThickness}, center = true)
+      offset(r = ${borderThickness})
+        offset(delta = ${borderThickness})
+          scale([${params.width}, ${params.height}, 1])
+            import("${svgPath}", center = true);
+  
+  // Restar logo para hueco
+  translate([0, 0, ${baseThickness}])
+    linear_extrude(height = ${reliefHeight} + 1)
+      scale([${params.width}, ${params.height}, 1])
+        import("${svgPath}", center = true);
+}
+
+// Logo en relieve
+translate([0, 0, ${baseThickness}])
+  linear_extrude(height = ${reliefHeight})
+    scale([${params.width}, ${params.height}, 1])
+      import("${svgPath}", center = true);
+`
+    } else if (borderEnabled) {
+      // Solo borde, sin relieve
+      scadScript = `
+// Llavero con borde ${jobId}
+linear_extrude(height = ${params.thickness}) {
+  offset(r = ${borderThickness})
+    offset(delta = ${borderThickness})
+      scale([${params.width}, ${params.height}, 1])
+        import("${svgPath}", center = true);
+}
+`
+    } else {
+      // Sin borde ni relieve (modo original)
+      scadScript = `
+// Llavero simple ${jobId}
 linear_extrude(height = ${params.thickness}) {
   scale([${params.width}, ${params.height}, 1]) {
     import("${svgPath}", center = true);
   }
 }
 `
+    }
 
     await fs.writeFile(scadPath, scadScript)
     logger.info(`OpenSCAD script created: ${scadPath}`)
 
-    // Run OpenSCAD to generate STL
+    // Run OpenSCAD to generate STL (defaults to binary format in this version)
     const command = `openscad -o "${outputPath}" "${scadPath}"`
     
     logger.info(`Running OpenSCAD: ${command}`)

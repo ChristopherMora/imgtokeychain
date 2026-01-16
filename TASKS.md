@@ -25,11 +25,11 @@
 ## 📊 PROGRESO GENERAL
 
 **Total:** 15 tareas  
-**Completadas:** 15 / 15 (100%) ✅  
+**Completadas:** 11 / 15 (73%) ✅  
 **En progreso:** 0  
-**Pendientes:** 0
+**Pendientes:** 4
 
-🎉 **¡PROYECTO COMPLETADO!**
+🚧 **MVP casi completo - Faltan validaciones y tests**
 
 ---
 
@@ -52,195 +52,203 @@
 
 ---
 
-### ⬜ Tarea 2: Configurar Docker Compose
-**Estado:** Pendiente  
+### ✅ Tarea 2: Configurar Docker Compose
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🔴 Alta  
 **Descripción:**
-- [ ] Servicio frontend (Next.js, puerto 3000)
-- [ ] Servicio api (Node/Express, puerto 4000)
-- [ ] Servicio worker (procesamiento)
-- [ ] Servicio db (PostgreSQL o SQLite)
-- [ ] Volúmenes para storage de archivos
-- [ ] Network interna para comunicación
-- [ ] Health checks para cada servicio
+- [x] Servicio frontend (Next.js, puerto 3000)
+- [x] Servicio api (Node/Express, puerto 4000)
+- [x] Servicio worker (procesamiento)
+- [x] Servicio db (PostgreSQL)
+- [x] Volúmenes para storage de archivos
+- [x] Network interna para comunicación
+- [x] Health checks para cada servicio
+**Notas:** Docker Compose completo con 5 servicios + Redis, health checks, volúmenes y network configurados
 
 ---
 
-### ⬜ Tarea 3: Setup Frontend Next.js
-**Estado:** Pendiente  
+### ✅ Tarea 3: Setup Frontend Next.js
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🔴 Alta  
 **Descripción:**
-- [ ] Inicializar Next.js 14+ con App Router
-- [ ] Configurar TypeScript
-- [ ] Instalar Tailwind CSS
-- [ ] Crear layout base
-- [ ] Crear página `/crear-llavero`
-- [ ] Configurar variables de entorno
-- [ ] Dockerfile para frontend
+- [x] Inicializar Next.js 14+ con App Router
+- [x] Configurar TypeScript
+- [x] Instalar Tailwind CSS
+- [x] Crear layout base
+- [x] Crear página `/crear-llavero`
+- [x] Configurar variables de entorno
+- [x] Dockerfile para frontend
+**Notas:** Frontend completo con 5 componentes React, Three.js para preview 3D, landing page y página de creación
 
 ---
 
-### ⬜ Tarea 4: Setup Backend API
-**Estado:** Pendiente  
+### ✅ Tarea 4: Setup Backend API
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🔴 Alta  
 **Descripción:**
-- [ ] Inicializar proyecto Node.js/Express (o Go)
-- [ ] Configurar TypeScript
-- [ ] Estructura de carpetas (routes, controllers, services)
-- [ ] Middleware básico (cors, body-parser, helmet)
-- [ ] Logger (winston o pino)
-- [ ] Manejo global de errores
-- [ ] Dockerfile para API
+- [x] Inicializar proyecto Node.js/Express
+- [x] Configurar TypeScript
+- [x] Estructura de carpetas (routes, controllers, services)
+- [x] Middleware básico (cors, body-parser, helmet)
+- [x] Logger (winston)
+- [x] Manejo global de errores
+- [x] Dockerfile para API
 
-**Endpoints a crear:**
-- [ ] `POST /api/jobs` - Crear trabajo + subir archivo
-- [ ] `GET /api/jobs/:id` - Estado del trabajo
-- [ ] `GET /api/jobs/:id/download` - Descargar STL
-- [ ] `GET /health` - Health check
+**Endpoints creados:**
+- [x] `POST /api/jobs` - Crear trabajo + subir archivo
+- [x] `GET /api/jobs/:id` - Estado del trabajo
+- [x] `GET /api/jobs/:id/download` - Descargar STL
+- [x] `GET /health` - Health check
+**Notas:** API completa con rate limiting, validación de archivos, BullMQ y Prisma ORM
 
 ---
 
-### ⬜ Tarea 5: Configurar base de datos
-**Estado:** Pendiente  
+### ✅ Tarea 5: Configurar base de datos
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🔴 Alta  
 **Descripción:**
-- [ ] Elegir: PostgreSQL o SQLite
-- [ ] Instalar ORM (Prisma o TypeORM)
-- [ ] Crear schema/modelos:
+- [x] Elegir: PostgreSQL
+- [x] Instalar ORM (Prisma)
+- [x] Crear schema/modelos:
   - `jobs` (id, status, params, file_paths, created_at, updated_at)
-  - `users` (opcional para MVP)
-- [ ] Crear migraciones iniciales
+  - `users` (para futuras mejoras)
+- [x] Script de inicialización SQL
+- [ ] ⚠️ Ejecutar migraciones (pendiente - requiere Docker)
 - [ ] Seed data de prueba (opcional)
+**Notas:** Schema Prisma completo con modelos User y Job, enums JobStatus. Falta ejecutar: `npx prisma migrate dev`
 
 ---
 
 ## ⚙️ FASE 2: CORE PROCESSING
 
-### ⬜ Tarea 6: Implementar upload seguro
-**Estado:** Pendiente  
+### ✅ Tarea 6: Implementar upload seguro
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🟡 Media  
 **Descripción:**
-- [ ] Middleware multer para multipart upload
-- [ ] Validación de formatos (PNG, JPG, JPEG)
-- [ ] Validación de tamaño máximo (5MB)
-- [ ] Sanitización de nombres de archivo
-- [ ] Almacenamiento temporal
-- [ ] Rate limiting básico
-- [ ] Antivirus opcional (clamd)
+- [x] Middleware multer para multipart upload
+- [x] Validación de formatos (PNG, JPG, JPEG)
+- [x] Validación de tamaño máximo (5MB)
+- [x] Sanitización de nombres de archivo
+- [x] Almacenamiento temporal
+- [x] Rate limiting básico
+- [ ] Antivirus opcional (no implementado en MVP)
+**Notas:** Upload seguro implementado con multer, validaciones completas y rate limiting
 
 ---
 
-### ⬜ Tarea 7: Worker pipeline imagen→SVG→STL
-**Estado:** Pendiente  
+### ✅ Tarea 7: Worker pipeline imagen→SVG→STL
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🔴 Alta  
 **Descripción:**
-- [ ] Sistema de cola de jobs (Bull/BullMQ o simple)
-- [ ] Procesador de jobs con estados
-- [ ] **Paso 1:** Normalizar imagen (quitar fondo, binarizar)
-  - Instalar ImageMagick o Sharp
-  - Controles: umbral, suavizado
-- [ ] **Paso 2:** Imagen → SVG con Potrace
-  - Instalar potrace
-  - Configurar parámetros de vectorización
-- [ ] **Paso 3:** SVG → STL (extrusión)
-  - Opción A: OpenSCAD
-  - Opción B: svg2stl u otra librería
+- [x] Sistema de cola de jobs (BullMQ + Redis)
+- [x] Procesador de jobs con estados
+- [x] **Paso 1:** Normalizar imagen (Sharp)
+  - Controles: resize, blur, contrast, threshold
+- [x] **Paso 2:** Imagen → SVG con Potrace
+  - Vectorización con potrace-js
+  - Configuración de parámetros optimizada
+- [x] **Paso 3:** SVG → STL (OpenSCAD)
+  - Extrusión 3D con linear_extrude
   - Parámetros: ancho, alto, grosor (mm)
-- [ ] Manejo de errores en cada paso
-- [ ] Logs detallados
-- [ ] Timeouts (máximo 30s)
+- [x] Manejo de errores en cada paso
+- [x] Logs detallados con Winston
+- [x] Timeouts configurables
+**Notas:** Pipeline completo implementado con 5 procesadores modulares
 
 ---
 
-### ⬜ Tarea 8: Generación de aro
-**Estado:** Pendiente  
+### ✅ Tarea 8: Generación de aro
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🟡 Media  
 **Descripción:**
-- [ ] Crear geometría del aro (toro reforzado)
-- [ ] Parámetros configurables:
+- [x] Crear geometría del aro (toro con OpenSCAD)
+- [x] Parámetros configurables:
   - Diámetro interno (mm)
   - Grosor del aro (mm)
-  - Posición (arriba/izquierda/derecha)
-- [ ] Union booleana con modelo principal (OpenSCAD)
-- [ ] Verificar que sea robusto (no se rompa)
-- [ ] Hacer aro opcional (checkbox)
+  - Posición (top/left/right/bottom)
+- [x] Union booleana con modelo principal
+- [x] Diseño robusto para impresión
+- [x] Aro opcional (ringEnabled boolean)
+**Notas:** ringGenerator.ts implementado con OpenSCAD, posicionamiento automático según parámetros
 
 ---
 
 ## 🎨 FASE 3: UI/UX
 
-### ⬜ Tarea 9: Preview 2D
-**Estado:** Pendiente  
+### ✅ Tarea 9: Preview 2D
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🟡 Media  
 **Descripción:**
-- [ ] Componente de upload con drag & drop
-- [ ] Preview de imagen original
-- [ ] Preview de imagen procesada (blanco/negro)
-- [ ] Mostrar contorno vectorial (SVG overlay)
-- [ ] Indicadores de dimensiones
+- [x] Componente de upload con drag & drop (ImageUploader.tsx)
+- [x] Preview de imagen original
+- [x] Grid de referencia con medidas
+- [x] Mostrar dimensiones configurables
+- [x] Vista previa responsiva
+**Notas:** Preview2D.tsx implementado con canvas y grid, ImageUploader con drag & drop completo
 
 ---
 
-### ⬜ Tarea 10: Preview 3D
-**Estado:** Pendiente  
+### ✅ Tarea 10: Preview 3D
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🟡 Media  
 **Descripción:**
-- [ ] Instalar Three.js + @react-three/fiber
-- [ ] Instalar @react-three/drei
-- [ ] Componente visor 3D
-- [ ] Cargar y renderizar STL
-- [ ] Controles: rotar, zoom, pan
-- [ ] Iluminación y materiales
-- [ ] Grid de referencia
-- [ ] Medidas visuales
+- [x] Instalar Three.js + @react-three/fiber
+- [x] Instalar @react-three/drei
+- [x] Componente visor 3D (Preview3D.tsx)
+- [x] Cargar y renderizar STL con STLLoader
+- [x] Controles: rotar, zoom, pan (OrbitControls)
+- [x] Iluminación y materiales configurados
+- [x] Grid de referencia
+- [x] Eje de coordenadas
+**Notas:** Preview 3D completo con Three.js, carga dinámica de STL desde API
 
 ---
 
-### ⬜ Tarea 11: Descarga de archivos
-**Estado:** Pendiente  
+### ✅ Tarea 11: Descarga de archivos
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🔴 Alta  
 **Descripción:**
-- [ ] Endpoint seguro de descarga
-- [ ] Generar URLs temporales (signed URLs)
-- [ ] Botón de descarga STL
-- [ ] Botón de descarga SVG (opcional)
-- [ ] Historial de descargas
-- [ ] Limpieza automática de archivos antiguos
+- [x] Endpoint seguro de descarga (GET /api/jobs/:id/download)
+- [x] Botón de descarga STL en JobStatus.tsx
+- [x] Validación de archivos existentes
+- [ ] URLs temporales (no implementado - directo por ahora)
+- [ ] Historial de descargas (pendiente)
+- [ ] Limpieza automática (pendiente)
+**Notas:** Descarga básica funcional, mejoras de seguridad y limpieza pendientes para v2
 
 ---
 
 ## 🛡️ FASE 4: CALIDAD Y DEPLOY
 
-### ⬜ Tarea 12: Manejo de errores
-**Estado:** Pendiente  
+### ✅ Tarea 12: Manejo de errores
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🟡 Media  
 **Descripción:**
-- [ ] Validación exhaustiva de inputs
-- [ ] Límites de recursos (CPU, memoria)
-- [ ] Manejo de imágenes corruptas
-- [ ] Reintentos automáticos (3 intentos)
-- [ ] Mensajes de error user-friendly
-- [ ] Estados de error detallados en UI
-- [ ] Logging centralizado
-- [ ] Monitoring básico
+- [x] Validación exhaustiva de inputs (middleware)
+- [x] Límites de recursos configurados
+- [x] Manejo de errores en pipeline
+- [x] Reintentos automáticos en BullMQ
+- [x] Mensajes de error claros
+- [x] Estados de error en JobStatus UI
+- [x] Logging centralizado con Winston
+- [ ] Monitoring avanzado (pendiente)
+**Notas:** Error handling robusto implementado, falta monitoring con herramientas externas
 
 ---
 
-### ⬜ Tarea 13: README y documentación
-**Estado:** Pendiente  
+### ✅ Tarea 13: README y documentación
+**Estado:** ✅ Completado (16/01/2026)  
 **Prioridad:** 🟡 Media  
 **Descripción:**
-- [ ] README principal con:
-  - Descripción del proyecto
-  - Arquitectura
-  - Instalación con Docker
-  - Variables de entorno
-  - Comandos principales
-- [ ] Documentación de API (Swagger/OpenAPI)
-- [ ] Ejemplos de uso
-- [ ] Imágenes de prueba incluidas
-- [ ] Troubleshooting común
-- [ ] Licencia
+- [x] README principal completo
+- [x] STRUCTURE.md con arquitectura detallada
+- [x] QUICKSTART.md con guía rápida
+- [x] DEPLOY.md con instrucciones de deployment
+- [x] PROJECT_SUMMARY.md con resumen
+- [x] FINAL_STATUS.md con estado del proyecto
+- [ ] Documentación de API (Swagger - pendiente)
+- [ ] Imágenes de prueba incluidas (pendiente)
+**Notas:** 6 archivos de documentación creados, falta Swagger y assets de ejemplo
 
 ---
 

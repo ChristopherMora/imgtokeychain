@@ -96,6 +96,7 @@ export const getJob = async (req: Request, res: Response, next: NextFunction) =>
         stlPath: true,
         svgPath: true,
         processedImagePath: true,
+        dominantColors: true,
         createdAt: true,
         updatedAt: true,
         completedAt: true,
@@ -117,6 +118,8 @@ export const downloadJob = async (req: Request, res: Response, next: NextFunctio
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
 
+    logger.info(`Download requested for job: ${id}`)
+
     const job = await prisma.job.findUnique({
       where: { id },
       select: {
@@ -127,20 +130,47 @@ export const downloadJob = async (req: Request, res: Response, next: NextFunctio
     })
 
     if (!job) {
+      logger.error(`Job not found: ${id}`)
       return res.status(404).json({ error: 'Job not found' })
     }
 
     if (job.status !== 'COMPLETED') {
-      return res.status(400).json({ error: 'Job not completed yet' })
+      logger.error(`Job not completed yet: ${id}, status: ${job.status}`)
+      return res.status(400).json({ error: `Job not completed yet. Status: ${job.status}` })
     }
 
-    if (!job.stlPath || !fs.existsSync(job.stlPath)) {
-      return res.status(404).json({ error: 'STL file not found' })
+    if (!job.stlPath) {
+      logger.error(`No STL path for job: ${id}`)
+      return res.status(404).json({ error: 'STL file not generated' })
+    }
+
+    logger.info(`Checking STL file: ${job.stlPath}`)
+    
+    if (!fs.existsSync(job.stlPath)) {
+      logger.error(`STL file not found on disk: ${job.stlPath}`)
+      return res.status(404).json({ error: `STL file not found: ${job.stlPath}` })
     }
 
     const originalName = Array.isArray(job.originalFilename) ? job.originalFilename[0] : job.originalFilename
     const filename = path.basename(originalName, path.extname(originalName))
-    res.download(job.stlPath, `${filename}.stl`)
+    
+    logger.info(`Downloading: ${job.stlPath} as ${filename}.stl`)
+    
+    // Set headers explicitly for binary download
+    res.setHeader('Content-Type', 'application/octet-stream')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}.stl"`)
+    res.setHeader('Content-Length', fs.statSync(job.stlPath).size)
+    
+    // Stream the file
+    const fileStream = fs.createReadStream(job.stlPath)
+    fileStream.pipe(res)
+    
+    fileStream.on('error', (error) => {
+      logger.error(`Error streaming file: ${error}`)
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Error downloading file' })
+      }
+    })
   } catch (error) {
     logger.error('Error downloading job:', error)
     next(error)

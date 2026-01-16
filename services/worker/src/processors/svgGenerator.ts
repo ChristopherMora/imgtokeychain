@@ -4,19 +4,21 @@ import path from 'path'
 import { logger } from '../utils/logger'
 
 const execAsync = promisify(exec)
-const STORAGE_PATH = process.env.STORAGE_PATH || '/app/storage'
+const STORAGE_PATH = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../../storage')
 
 export const imageToSvg = async (imagePath: string, jobId: string): Promise<string> => {
   try {
     const outputPath = path.join(STORAGE_PATH, 'processed', `${jobId}.svg`)
     
-    // Use potrace with optimized parameters for better quality
+    // Potrace optimizado para bordes más suaves
     // -s = SVG output
-    // -o = output file
+    // -o = output file  
     // --tight = tight bounding box
-    // -a 1.5 = alphamax (corner threshold, higher = smoother corners)
-    // -O 0.2 = optimization tolerance (simplify curves)
-    const command = `potrace "${imagePath}" -s -o "${outputPath}" --tight -a 1.5 -O 0.2`
+    // -t 5 = turdsize (eliminar manchas pequeñas)
+    // -a 1.0 = alphamax (suavizado de esquinas, 1.0 = balance)
+    // -O 0.8 = optimización moderada-alta para suavizar
+    // -n = turn policy white (mantener detalles internos)
+    const command = `potrace "${imagePath}" -s -o "${outputPath}" --tight -t 5 -a 1.0 -O 0.8 -n`
     
     logger.info(`Running potrace: ${command}`)
     

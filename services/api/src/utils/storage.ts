@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { logger } from './logger'
 
-const STORAGE_PATH = process.env.STORAGE_PATH || '/app/storage'
+const STORAGE_PATH = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../../storage')
 
 export const setupStorage = () => {
   const directories = [

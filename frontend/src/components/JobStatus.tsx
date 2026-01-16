@@ -6,6 +6,7 @@ import { CheckCircle, Clock, AlertCircle, Download } from 'lucide-react'
 interface JobStatusProps {
   jobId: string
   onStatusChange?: (status: string) => void
+  onColorsExtracted?: (colors: string[]) => void
 }
 
 interface Job {
@@ -14,9 +15,10 @@ interface Job {
   progress: number
   errorMessage?: string
   stlPath?: string
+  dominantColors?: string[]
 }
 
-export default function JobStatus({ jobId, onStatusChange }: JobStatusProps) {
+export default function JobStatus({ jobId, onStatusChange, onColorsExtracted }: JobStatusProps) {
   const [job, setJob] = useState<Job | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -30,11 +32,21 @@ export default function JobStatus({ jobId, onStatusChange }: JobStatusProps) {
         
         if (response.ok) {
           const data = await response.json()
-          setJob(data)
+          // Normalizar status a minúsculas para consistencia
+          const normalizedJob = {
+            ...data,
+            status: data.status.toLowerCase()
+          }
+          setJob(normalizedJob)
           
           // Notify parent of status change
           if (onStatusChange && data.status) {
             onStatusChange(data.status.toUpperCase())
+          }
+          
+          // Notify parent of colors if extracted
+          if (onColorsExtracted && data.dominantColors && data.dominantColors.length > 0) {
+            onColorsExtracted(data.dominantColors)
           }
         }
       } catch (error) {
@@ -53,7 +65,7 @@ export default function JobStatus({ jobId, onStatusChange }: JobStatusProps) {
     }, 2000)
 
     return () => clearInterval(interval)
-  }, [jobId, onStatusChange])
+  }, [jobId, onStatusChange, onColorsExtracted])
 
   if (loading) {
     return <div className="text-center text-gray-600">Cargando...</div>
@@ -125,8 +137,13 @@ export default function JobStatus({ jobId, onStatusChange }: JobStatusProps) {
       {job.status === 'completed' && (
         <a
           href={`${process.env.NEXT_PUBLIC_API_URL}/jobs/${jobId}/download`}
-          download
+          target="_blank"
+          rel="noopener noreferrer"
           className="flex items-center justify-center gap-2 w-full py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-colors"
+          onClick={(e) => {
+            e.preventDefault()
+            window.open(`${process.env.NEXT_PUBLIC_API_URL}/jobs/${jobId}/download`, '_blank')
+          }}
         >
           <Download className="h-5 w-5" />
           Descargar STL

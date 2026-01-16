@@ -10,6 +10,9 @@ interface ParameterControlsProps {
     ringThickness: number
     ringPosition: 'top' | 'left' | 'right'
     threshold?: number
+    borderEnabled?: boolean
+    borderThickness?: number
+    reliefEnabled?: boolean
   }
   onChange: (params: any) => void
 }
@@ -96,6 +99,67 @@ export default function ParameterControls({ parameters, onChange }: ParameterCon
             Menor = más detalle (puede incluir ruido) • Mayor = más limpio (puede perder detalle)
           </p>
         </div>
+      </div>
+
+      {/* Borde del Llavero */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-gray-700">Borde Marco</h3>
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              checked={parameters.borderEnabled ?? true}
+              onChange={(e) => updateParam('borderEnabled', e.target.checked)}
+              className="sr-only peer"
+            />
+            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
+          </label>
+        </div>
+
+        {(parameters.borderEnabled ?? true) && (
+          <div className="pl-4 border-l-2 border-primary-200">
+            <label className="flex justify-between text-sm mb-1">
+              <span>Grosor del borde</span>
+              <span className="font-mono text-primary-600">{parameters.borderThickness || 2}mm</span>
+            </label>
+            <input
+              type="range"
+              min="1"
+              max="5"
+              step="0.5"
+              value={parameters.borderThickness || 2}
+              onChange={(e) => updateParam('borderThickness', Number(e.target.value))}
+              className="w-full"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Borde alrededor del logo para darle forma de llavero
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Relieve 3D */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-gray-700">Relieve 3D</h3>
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              checked={parameters.reliefEnabled ?? false}
+              onChange={(e) => updateParam('reliefEnabled', e.target.checked)}
+              className="sr-only peer"
+            />
+            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
+          </label>
+        </div>
+        
+        {parameters.reliefEnabled && (
+          <div className="pl-4 border-l-2 border-primary-200">
+            <p className="text-xs text-gray-500">
+              El logo sobresaldrá sobre una base plana
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Aro */}

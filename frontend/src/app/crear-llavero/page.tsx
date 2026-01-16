@@ -11,6 +11,7 @@ export default function CrearLlaveroPage() {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<string>('pending')
+  const [dominantColors, setDominantColors] = useState<string[]>([])
   const [parameters, setParameters] = useState({
     width: 50,
     height: 50,
@@ -20,6 +21,9 @@ export default function CrearLlaveroPage() {
     ringThickness: 2,
     ringPosition: 'top' as 'top' | 'left' | 'right',
     threshold: 180,
+    borderEnabled: true,
+    borderThickness: 2,
+    reliefEnabled: false,
   })
 
   return (
@@ -61,7 +65,11 @@ export default function CrearLlaveroPage() {
             {jobId && (
               <div className="bg-white rounded-xl shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4">3. Estado del Proceso</h2>
-                <JobStatus jobId={jobId} onStatusChange={setJobStatus} />
+                <JobStatus 
+                  jobId={jobId} 
+                  onStatusChange={setJobStatus}
+                  onColorsExtracted={setDominantColors}
+                />
               </div>
             )}
           </div>
@@ -80,7 +88,7 @@ export default function CrearLlaveroPage() {
             {jobId && (
               <div className="bg-white rounded-xl shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4">Preview 3D</h2>
-                <Preview3D jobId={jobId} status={jobStatus} />
+                <Preview3D jobId={jobId} status={jobStatus} dominantColors={dominantColors} />
               </div>
             )}
           </div>

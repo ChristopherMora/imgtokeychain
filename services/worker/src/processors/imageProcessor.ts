@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client'
 import path from 'path'
 import { logger } from '../utils/logger'
-import { preprocessImage } from './imagePreprocessor'
+import { preprocessImage, extractDominantColors } from './imagePreprocessor'
 import { imageToSvg } from './svgGenerator'
 import { svgToStl } from './stlGenerator'
 import { addRing } from './ringGenerator'
@@ -33,6 +33,15 @@ export const processImageJob = async (data: JobData) => {
     })
 
     logger.info(`[${jobId}] Starting image preprocessing...`)
+    
+    // Step 0: Extract dominant colors from original image
+    logger.info(`[${jobId}] Extracting dominant colors...`)
+    const dominantColors = await extractDominantColors(filePath)
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { dominantColors, progress: 5 },
+    })
+    logger.info(`[${jobId}] Dominant colors: ${dominantColors.join(', ')}`)
     
     // Step 1: Preprocess image (remove background, binarize)
     const processedImagePath = await preprocessImage(filePath, jobId)
