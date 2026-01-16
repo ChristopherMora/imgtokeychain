@@ -1,0 +1,84 @@
+// =============================================================================
+// Prisma Schema - Imagen a Llavero 3D
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// MODELOS
+// =============================================================================
+
+model User {
+  id        String   @id @default(uuid())
+  email     String?  @unique
+  name      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  lastLogin DateTime? @map("last_login")
+  
+  // Relaciones
+  jobs      Job[]
+  
+  @@map("users")
+}
+
+model Job {
+  id             String   @id @default(uuid())
+  status         JobStatus @default(PENDING)
+  progress       Int      @default(0)
+  errorMessage   String?  @map("error_message")
+  
+  // Información del archivo original
+  originalFilename String  @map("original_filename")
+  fileSize         Int     @map("file_size")
+  
+  // Parámetros de conversión
+  widthMm      Float?  @map("width_mm")
+  heightMm     Float?  @map("height_mm")
+  thicknessMm  Float?  @map("thickness_mm")
+  
+  // Configuración del aro
+  ringEnabled      Boolean @default(false) @map("ring_enabled")
+  ringDiameterMm   Float?  @map("ring_diameter_mm")
+  ringThicknessMm  Float?  @map("ring_thickness_mm")
+  ringPosition     String? @map("ring_position")
+  
+  // Rutas de archivos
+  inputPath            String? @map("input_path")
+  processedImagePath   String? @map("processed_image_path")
+  svgPath              String? @map("svg_path")
+  stlPath              String? @map("stl_path")
+  
+  // Timestamps
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  completedAt DateTime? @map("completed_at")
+  
+  // Relaciones
+  userId      String?   @map("user_id")
+  user        User?     @relation(fields: [userId], references: [id])
+  
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@index([userId])
+  @@map("jobs")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  
+  @@map("job_status")
+}
