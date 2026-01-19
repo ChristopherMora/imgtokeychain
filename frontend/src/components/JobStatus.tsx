@@ -135,19 +135,37 @@ export default function JobStatus({ jobId, onStatusChange, onColorsExtracted }: 
 
       {/* Botón de descarga */}
       {job.status === 'completed' && (
-        <a
-          href={`${process.env.NEXT_PUBLIC_API_URL}/jobs/${jobId}/download`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center justify-center gap-2 w-full py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-colors"
-          onClick={(e) => {
-            e.preventDefault()
-            window.open(`${process.env.NEXT_PUBLIC_API_URL}/jobs/${jobId}/download`, '_blank')
-          }}
-        >
-          <Download className="h-5 w-5" />
-          Descargar STL
-        </a>
+        <div className="space-y-2">
+          <a
+            href={`${process.env.NEXT_PUBLIC_API_URL}/jobs/${jobId}/download-multicolor`}
+            download={`llavero_multicolor_${jobId}.zip`}
+            className="flex items-center justify-center gap-2 w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-lg font-semibold hover:from-purple-700 hover:to-pink-700 transition-all shadow-lg"
+          >
+            <Download className="h-5 w-5" />
+            🎨 Descargar Llavero Multi-Color (ZIP)
+          </a>
+          
+          <div className="text-xs text-gray-700 mt-2 p-3 bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg border border-purple-200">
+            <div className="font-bold mb-1">📦 Contenido del ZIP:</div>
+            <ul className="list-disc list-inside space-y-1 text-gray-600">
+              <li>5 archivos STL (uno por cada color detectado)</li>
+              <li>colors.json con códigos hex de cada color</li>
+              <li>INSTRUCTIONS.txt con guía de importación</li>
+            </ul>
+            <div className="mt-2 text-gray-600">
+              <strong>Cómo usar:</strong> Extrae el ZIP, importa todos los STL en Bambu Studio/PrusaSlicer, y asigna los colores indicados a cada pieza.
+            </div>
+          </div>
+          
+          <a
+            href={`${process.env.NEXT_PUBLIC_API_URL}/jobs/${jobId}/download`}
+            download={`llavero_${jobId}.stl`}
+            className="flex items-center justify-center gap-2 w-full py-2 bg-gray-600 text-white rounded-lg font-medium hover:bg-gray-700 transition-colors text-sm"
+          >
+            <Download className="h-4 w-4" />
+            Descargar Solo Color Principal (STL)
+          </a>
+        </div>
       )}
     </div>
   )

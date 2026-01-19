@@ -22,8 +22,13 @@ export const svgToStl = async (
   params: StlParams
 ): Promise<string> => {
   try {
+    logger.info(`[${jobId}] svgToStl called with params:`, JSON.stringify(params))
+    
     const outputPath = path.join(STORAGE_PATH, 'processed', `${jobId}.stl`)
     const scadPath = path.join(STORAGE_PATH, 'temp', `${jobId}.scad`)
+    
+    logger.info(`[${jobId}] Will create SCAD at: ${scadPath}`)
+    logger.info(`[${jobId}] Thickness value: ${params.thickness}`)
 
     const borderEnabled = params.borderEnabled ?? true
     const borderThickness = params.borderThickness || 2

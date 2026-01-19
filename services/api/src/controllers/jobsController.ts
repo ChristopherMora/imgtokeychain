@@ -25,6 +25,8 @@ export const createJob = async (req: Request, res: Response, next: NextFunction)
     // Parse parameters
     const params = req.body.params ? JSON.parse(req.body.params) : {}
     
+    console.log('Received params:', params) // DEBUG
+    
     const {
       width = 50,
       height = 50,
@@ -33,6 +35,10 @@ export const createJob = async (req: Request, res: Response, next: NextFunction)
       ringDiameter = 5,
       ringThickness = 2,
       ringPosition = 'top',
+      threshold = 180,
+      borderEnabled = true,
+      borderThickness = 2,
+      reliefEnabled = false,
     } = params
 
     // Create job in database
@@ -65,6 +71,10 @@ export const createJob = async (req: Request, res: Response, next: NextFunction)
         ringDiameter,
         ringThickness,
         ringPosition,
+        threshold,
+        borderEnabled,
+        borderThickness,
+        reliefEnabled,
       },
     })
 
@@ -173,6 +183,174 @@ export const downloadJob = async (req: Request, res: Response, next: NextFunctio
     })
   } catch (error) {
     logger.error('Error downloading job:', error)
+    next(error)
+  }
+}
+export const downloadJobColors = async (
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) => {
+  try {
+    const { id } = req.params
+    logger.info(`Download colors requested for job: ${id}`)
+
+    const job = await prisma.job.findUnique({
+      where: { id },
+    })
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' })
+    }
+
+    if (job.status !== 'COMPLETED') {
+      return res.status(400).json({ error: 'Job not completed yet' })
+    }
+
+    if (!job.stlPath) {
+      return res.status(404).json({ error: 'STL file not generated' })
+    }
+
+    // Ruta del archivo de colores (mismo nombre que el STL pero con _colors.json)
+    const colorPath = job.stlPath.replace('.stl', '_colors.json')
+    
+    if (!fs.existsSync(colorPath)) {
+      logger.error(`Color file not found: ${colorPath}`)
+      return res.status(404).json({ error: 'Color configuration file not found' })
+    }
+
+    logger.info(`Downloading colors: ${colorPath}`)
+    
+    res.setHeader('Content-Type', 'application/json')
+    res.setHeader('Content-Disposition', `attachment; filename="colors_${id}.json"`)
+    
+    const fileStream = fs.createReadStream(colorPath)
+    fileStream.pipe(res)
+    
+    fileStream.on('error', (error) => {
+      logger.error(`Error streaming color file: ${error}`)
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Error downloading color file' })
+      }
+    })
+  } catch (error) {
+    logger.error('Error downloading colors:', error)
+    next(error)
+  }
+}
+
+export const download3MF = async (
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) => {
+  try {
+    const { id } = req.params
+    logger.info(`Download 3MF requested for job: ${id}`)
+
+    const job = await prisma.job.findUnique({
+      where: { id },
+    })
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' })
+    }
+
+    if (job.status !== 'COMPLETED') {
+      return res.status(400).json({ error: 'Job not completed yet' })
+    }
+
+    if (!job.stlPath) {
+      return res.status(404).json({ error: 'STL file not generated' })
+    }
+
+    // Ruta del archivo 3MF
+    const mfPath = job.stlPath.replace('.stl', '.3mf')
+    
+    if (!fs.existsSync(mfPath)) {
+      logger.error(`3MF file not found: ${mfPath}`)
+      return res.status(404).json({ error: '3MF file not available. Download STL instead.' })
+    }
+
+    const originalName = Array.isArray(job.originalFilename) ? job.originalFilename[0] : job.originalFilename
+    const filename = path.basename(originalName, path.extname(originalName))
+    
+    logger.info(`Downloading 3MF: ${mfPath} as ${filename}.3mf`)
+    
+    res.setHeader('Content-Type', 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}.3mf"`)
+    res.setHeader('Content-Length', fs.statSync(mfPath).size)
+    
+    const fileStream = fs.createReadStream(mfPath)
+    fileStream.pipe(res)
+    
+    fileStream.on('error', (error) => {
+      logger.error(`Error streaming 3MF file: ${error}`)
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Error downloading 3MF file' })
+      }
+    })
+  } catch (error) {
+    logger.error('Error downloading 3MF:', error)
+    next(error)
+  }
+}
+
+export const downloadMulticolorZip = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
+
+    logger.info(`Multi-color ZIP download requested for job: ${id}`)
+
+    const job = await prisma.job.findUnique({
+      where: { id },
+      select: {
+        status: true,
+        stlPath: true,
+        originalFilename: true,
+      },
+    })
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' })
+    }
+
+    if (job.status !== 'COMPLETED') {
+      return res.status(400).json({ error: 'Job not completed yet' })
+    }
+
+    if (!job.stlPath) {
+      return res.status(404).json({ error: 'STL files not generated' })
+    }
+
+    // Path to the multi-color ZIP file
+    const zipPath = path.join(path.dirname(job.stlPath), `${id}_multicolor.zip`)
+    
+    if (!fs.existsSync(zipPath)) {
+      logger.error(`Multi-color ZIP not found: ${zipPath}`)
+      return res.status(404).json({ error: 'Multi-color ZIP file not available' })
+    }
+
+    const originalName = Array.isArray(job.originalFilename) ? job.originalFilename[0] : job.originalFilename
+    const filename = path.basename(originalName, path.extname(originalName))
+    
+    logger.info(`Downloading multi-color ZIP: ${zipPath} as ${filename}_multicolor.zip`)
+    
+    res.setHeader('Content-Type', 'application/zip')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}_multicolor.zip"`)
+    res.setHeader('Content-Length', fs.statSync(zipPath).size)
+    
+    const fileStream = fs.createReadStream(zipPath)
+    fileStream.pipe(res)
+    
+    fileStream.on('error', (error) => {
+      logger.error(`Error streaming multi-color ZIP: ${error}`)
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Error downloading multi-color ZIP' })
+      }
+    })
+  } catch (error) {
+    logger.error('Error downloading multi-color ZIP:', error)
     next(error)
   }
 }

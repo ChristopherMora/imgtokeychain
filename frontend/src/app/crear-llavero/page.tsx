@@ -9,9 +9,11 @@ import JobStatus from '@/components/JobStatus'
 
 export default function CrearLlaveroPage() {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<string>('pending')
   const [dominantColors, setDominantColors] = useState<string[]>([])
+  const [isGenerating, setIsGenerating] = useState(false)
   const [parameters, setParameters] = useState({
     width: 50,
     height: 50,
@@ -25,6 +27,44 @@ export default function CrearLlaveroPage() {
     borderThickness: 2,
     reliefEnabled: false,
   })
+
+  const handleGenerateKeychain = async () => {
+    console.log('🔵 Generar clicked, uploadedFile:', uploadedFile)
+    console.log('🔵 Parameters:', parameters)
+    
+    if (!uploadedFile) {
+      console.error('❌ No hay archivo subido')
+      return
+    }
+
+    setIsGenerating(true)
+    setJobStatus('pending')
+    
+    try {
+      const formData = new FormData()
+      formData.append('file', uploadedFile)
+      formData.append('params', JSON.stringify(parameters))
+      
+      console.log('🔵 Enviando FormData a API...')
+
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001/api'
+      const response = await fetch(`${apiUrl}/jobs`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (!response.ok) {
+        throw new Error('Error al generar llavero')
+      }
+
+      const data = await response.json()
+      setJobId(data.id)
+    } catch (err) {
+      console.error('Error generating keychain:', err)
+    } finally {
+      setIsGenerating(false)
+    }
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -47,6 +87,8 @@ export default function CrearLlaveroPage() {
               <ImageUploader
                 onImageUpload={setUploadedImage}
                 onJobCreated={setJobId}
+                onFileSelected={setUploadedFile}
+                parameters={parameters}
               />
             </div>
 
@@ -57,6 +99,8 @@ export default function CrearLlaveroPage() {
                 <ParameterControls
                   parameters={parameters}
                   onChange={setParameters}
+                  onGenerate={handleGenerateKeychain}
+                  isGenerating={isGenerating}
                 />
               </div>
             )}
@@ -88,7 +132,12 @@ export default function CrearLlaveroPage() {
             {jobId && (
               <div className="bg-white rounded-xl shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4">Preview 3D</h2>
-                <Preview3D jobId={jobId} status={jobStatus} dominantColors={dominantColors} />
+                <Preview3D 
+                  jobId={jobId} 
+                  status={jobStatus} 
+                  dominantColors={dominantColors} 
+                  originalImage={uploadedImage || undefined}
+                />
               </div>
             )}
           </div>

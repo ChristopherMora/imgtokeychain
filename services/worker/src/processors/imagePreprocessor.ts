@@ -9,14 +9,15 @@ export const extractDominantColors = async (inputPath: string): Promise<string[]
   try {
     const image = sharp(inputPath)
     
-    // Resize to small size for faster processing
+    // Resize to medium size for better color sampling
     const { data, info } = await image
-      .resize(100, 100, { fit: 'inside' })
+      .resize(200, 200, { fit: 'inside' })
+      .removeAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true })
     
-    // Count color frequencies
-    const colorMap = new Map<string, number>()
+    // Count color frequencies with saturation tracking
+    const colorMap = new Map<string, { count: number; saturation: number; hue: number }>()
     const channels = info.channels
     
     for (let i = 0; i < data.length; i += channels) {
@@ -24,28 +25,95 @@ export const extractDominantColors = async (inputPath: string): Promise<string[]
       const g = data[i + 1]
       const b = data[i + 2]
       
-      // Skip near-white colors (background)
-      if (r > 240 && g > 240 && b > 240) continue
+      // Skip very bright colors (near-white backgrounds)
+      if (r > 245 && g > 245 && b > 245) continue
       
-      // Round to nearest 16 to group similar colors
-      const rr = Math.round(r / 16) * 16
-      const gg = Math.round(g / 16) * 16
-      const bb = Math.round(b / 16) * 16
+      // Quantize with smaller steps (20) for better color variety, and clamp to 0-255
+      const rr = Math.min(255, Math.round(r / 20) * 20)
+      const gg = Math.min(255, Math.round(g / 20) * 20)
+      const bb = Math.min(255, Math.round(b / 20) * 20)
+      
+      // Calculate saturation and hue for color analysis
+      const max = Math.max(rr, gg, bb)
+      const min = Math.min(rr, gg, bb)
+      const saturation = max === 0 ? 0 : (max - min) / max
+      
+      // Calculate hue (0-360)
+      let hue = 0
+      if (max !== min) {
+        const delta = max - min
+        if (max === rr) {
+          hue = ((gg - bb) / delta + (gg < bb ? 6 : 0)) * 60
+        } else if (max === gg) {
+          hue = ((bb - rr) / delta + 2) * 60
+        } else {
+          hue = ((rr - gg) / delta + 4) * 60
+        }
+      }
       
       const colorKey = `${rr},${gg},${bb}`
-      colorMap.set(colorKey, (colorMap.get(colorKey) || 0) + 1)
+      const existing = colorMap.get(colorKey) || { count: 0, saturation, hue }
+      colorMap.set(colorKey, {
+        count: existing.count + 1,
+        saturation,
+        hue,
+      })
     }
     
-    // Sort by frequency and get top 5 colors
-    const sortedColors = Array.from(colorMap.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([color]) => {
-        const [r, g, b] = color.split(',').map(Number)
-        return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
+    // Group colors into distinct hue ranges and pick the most vibrant/frequent from each
+    const colorArray = Array.from(colorMap.entries()).map(([color, data]) => ({
+      color,
+      count: data.count,
+      saturation: data.saturation,
+      hue: data.hue,
+    }))
+    
+    // Filter out low-saturation colors if we have enough saturated ones
+    const saturatedColors = colorArray.filter(c => c.saturation > 0.2)
+    const colorsToUse = saturatedColors.length >= 3 ? saturatedColors : colorArray
+    
+    // Sort by saturation first (most vibrant), then frequency
+    colorsToUse.sort((a, b) => {
+      const satDiff = b.saturation - a.saturation
+      if (Math.abs(satDiff) > 0.15) return satDiff > 0 ? 1 : -1
+      return b.count - a.count
+    })
+    
+    // Select diverse colors (avoid similar hues)
+    const selectedColors: typeof colorsToUse = []
+    for (const color of colorsToUse) {
+      if (selectedColors.length >= 5) break
+      
+      // Check if this color is sufficiently different from already selected ones
+      const isDifferent = selectedColors.every(selected => {
+        const hueDiff = Math.min(
+          Math.abs(color.hue - selected.hue),
+          360 - Math.abs(color.hue - selected.hue)
+        )
+        return hueDiff > 30 || Math.abs(color.saturation - selected.saturation) > 0.3
       })
+      
+      if (isDifferent || selectedColors.length === 0) {
+        selectedColors.push(color)
+      }
+    }
+    
+    const sortedColors = selectedColors.map(({ color }) => {
+      const [r, g, b] = color.split(',').map(Number)
+      // Ensure we clamp values to 0-255 and format correctly
+      const rHex = Math.min(255, Math.max(0, r)).toString(16).padStart(2, '0')
+      const gHex = Math.min(255, Math.max(0, g)).toString(16).padStart(2, '0')
+      const bHex = Math.min(255, Math.max(0, b)).toString(16).padStart(2, '0')
+      return `#${rHex}${gHex}${bHex}`
+    })
     
     logger.info(`Extracted ${sortedColors.length} dominant colors: ${sortedColors.join(', ')}`)
+    
+    // If no colors found, return a default palette
+    if (sortedColors.length === 0) {
+      logger.warn('No colors extracted, using default blue')
+      return ['#0ea5e9']
+    }
     
     return sortedColors
   } catch (error) {

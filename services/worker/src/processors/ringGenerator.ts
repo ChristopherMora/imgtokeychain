@@ -49,15 +49,13 @@ module keyring(inner_diameter, thickness) {
   }
 }
 
-union() {
-  // Import original STL
-  import("${stlPath}", convexity = 3);
-  
-  // Add ring
-  translate([${translateX}, ${translateY}, 0]) {
-    rotate([90, 0, 0]) {
-      keyring(${params.diameter}, ${params.thickness});
-    }
+// Import original STL
+import("${stlPath}", convexity = 10);
+
+// Add ring as separate object
+translate([${translateX}, ${translateY}, 0]) {
+  rotate([90, 0, 0]) {
+    keyring(${params.diameter}, ${params.thickness});
   }
 }
 `
@@ -81,6 +79,15 @@ union() {
     // Verify output
     try {
       await fs.access(outputPath)
+      const stats = await fs.stat(outputPath)
+      const originalStats = await fs.stat(stlPath)
+      
+      // If the output file is smaller than the original, union failed
+      if (stats.size < originalStats.size * 0.5) {
+        logger.warn(`Ring generation failed - output too small (${stats.size} bytes vs ${originalStats.size} bytes original)`)
+        throw new Error('CGAL union failed - keeping original STL')
+      }
+      
       logger.info(`STL with ring generated: ${outputPath}`)
     } catch {
       throw new Error('STL with ring was not created')

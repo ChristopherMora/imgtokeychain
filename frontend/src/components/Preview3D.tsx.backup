@@ -12,8 +12,9 @@ interface Preview3DProps {
   originalImage?: string
 }
 
-function STLModel({ stlData, dominantColors }: { stlData: ArrayBuffer; dominantColors?: string[] }) {
+function STLModel({ stlData, dominantColors, originalImage }: { stlData: ArrayBuffer; dominantColors?: string[]; originalImage?: string }) {
   const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null)
+  const [texture, setTexture] = useState<THREE.Texture | null>(null)
   
   // ASCII STL parser
   const parseAsciiSTL = (buffer: ArrayBuffer): THREE.BufferGeometry => {
@@ -115,40 +116,118 @@ function STLModel({ stlData, dominantColors }: { stlData: ArrayBuffer; dominantC
     }
   }, [stlData])
   
+  // Load texture from original image
+  useEffect(() => {
+    if (!originalImage) return
+    
+    const loader = new THREE.TextureLoader()
+    loader.load(
+      originalImage,
+      (loadedTexture) => {
+        loadedTexture.colorSpace = THREE.SRGBColorSpace
+        setTexture(loadedTexture)
+      },
+      undefined,
+      (error) => {
+        console.error('Error loading texture:', error)
+      }
+    )
+  }, [originalImage])
+  
   if (!geometry) return null
   
   // Center and scale the geometry
   geometry.center()
   geometry.computeBoundingBox()
-  const boundingBox = geometry.boundingBox!
+  const boundingBox = geometry.boundingBox
+  
+  if (!boundingBox) return null
+  
   const size = new THREE.Vector3()
   boundingBox.getSize(size)
   const maxDim = Math.max(size.x, size.y, size.z)
   const scale = 3 / maxDim
   
-  // Use dominant color or default blue
-  const modelColor = dominantColors && dominantColors.length > 0 
-    ? dominantColors[0] 
-    : '#0ea5e9'
+  // Generate planar UV coordinates for texture mapping
+  const positions = geometry.attributes.position
+  const uvs = new Float32Array(positions.count * 2)
+  
+  for (let i = 0; i < positions.count; i++) {
+    const x = positions.getX(i)
+    const y = positions.getY(i)
+    
+    // Map X and Y to UV coordinates (0-1 range)
+    // This creates a planar projection from the top view
+    const u = (x - boundingBox.min.x) / (boundingBox.max.x - boundingBox.min.x)
+    const v = (y - boundingBox.min.y) / (boundingBox.max.y - boundingBox.min.y)
+    
+    uvs[i * 2] = u
+    uvs[i * 2 + 1] = v
+  }
+  
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+  
+  // Use texture if available, otherwise use dominant color gradient
+  if (texture) {
+    return (
+      <mesh geometry={geometry} scale={scale}>
+        <meshStandardMaterial 
+          map={texture}
+          metalness={0.1} 
+          roughness={0.7} 
+        />
+      </mesh>
+    )
+  }
+  
+  // Fallback: gradient with dominant colors
+  const colors = dominantColors && dominantColors.length > 0 
+    ? dominantColors 
+    : ['#0ea5e9']
+  
+  const colorAttribute = new Float32Array(positions.count * 3)
+  
+  for (let i = 0; i < positions.count; i++) {
+    const y = positions.getY(i)
+    const normalizedY = (y - boundingBox.min.y) / (boundingBox.max.y - boundingBox.min.y)
+    
+    const colorIndex = Math.min(
+      Math.floor(normalizedY * colors.length),
+      colors.length - 1
+    )
+    
+    const color = new THREE.Color(colors[colorIndex])
+    colorAttribute[i * 3] = color.r
+    colorAttribute[i * 3 + 1] = color.g
+    colorAttribute[i * 3 + 2] = color.b
+  }
+  
+  geometry.setAttribute('color', new THREE.BufferAttribute(colorAttribute, 3))
   
   return (
     <mesh geometry={geometry} scale={scale}>
-      <meshStandardMaterial color={modelColor} metalness={0.3} roughness={0.4} />
+      <meshStandardMaterial 
+        vertexColors 
+        metalness={0.2} 
+        roughness={0.6} 
+      />
     </mesh>
   )
 }
 
-export default function Preview3D({ jobId, status, dominantColors }: Preview3DProps) {
+export default function Preview3D({ jobId, status, dominantColors, originalImage }: Preview3DProps) {
   const [stlData, setStlData] = useState<ArrayBuffer | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    // Reset state when jobId changes
+    setStlData(null)
+    setLoading(true)
+    setError(null)
+    
     // Only fetch STL when job is completed
     if (status === 'COMPLETED' || status === 'completed') {
-      setLoading(true)
-      setError(null)
-      
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api'
       const url = `${apiUrl}/jobs/${jobId}/download`
       
@@ -212,8 +291,7 @@ export default function Preview3D({ jobId, status, dominantColors }: Preview3DPr
 
         {/* STL Model */}
         <Suspense fallback={null}>
-          <STLModel stlData={stlData} dominantColors={dominantColors} />
-        </Suspense>
+        <STLModel stlData={stlData} dominantColors={dominantColors} originalImage={originalImage} />
 
         {/* Grid */}
         <Grid

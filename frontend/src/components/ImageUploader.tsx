@@ -6,9 +6,11 @@ import { Upload, X } from 'lucide-react'
 interface ImageUploaderProps {
   onImageUpload: (imageUrl: string) => void
   onJobCreated: (jobId: string) => void
+  onFileSelected?: (file: File) => void
+  parameters?: any
 }
 
-export default function ImageUploader({ onImageUpload, onJobCreated }: ImageUploaderProps) {
+export default function ImageUploader({ onImageUpload, onJobCreated, onFileSelected, parameters }: ImageUploaderProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -37,28 +39,54 @@ export default function ImageUploader({ onImageUpload, onJobCreated }: ImageUplo
     }
     reader.readAsDataURL(file)
 
+    // Guardar archivo para regeneración
+    if (onFileSelected) {
+      onFileSelected(file)
+    }
+
     // Upload al servidor
     setUploading(true)
+    console.log('🔵 Iniciando upload a la API...')
     try {
       const formData = new FormData()
       formData.append('file', file)
+      if (parameters) {
+        formData.append('params', JSON.stringify(parameters))
+      }
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api'
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001/api'
+      console.log('🔵 API URL:', apiUrl)
+      console.log('🔵 Enviando POST a:', `${apiUrl}/jobs`)
+      console.log('🔵 FormData contiene:', {
+        hasFile: formData.has('file'),
+        hasParams: formData.has('params'),
+      })
+      
       const response = await fetch(`${apiUrl}/jobs`, {
         method: 'POST',
         body: formData,
+        mode: 'cors',
+      }).catch(fetchErr => {
+        console.error('❌ Fetch falló:', fetchErr)
+        throw fetchErr
       })
 
+      console.log('🔵 Response recibido:', response)
+      console.log('🔵 Response status:', response.status)
+      
       if (!response.ok) {
         throw new Error('Error al subir la imagen')
       }
 
       const data = await response.json()
+      console.log('🔵 Job creado:', data.id)
       onJobCreated(data.id)
     } catch (err) {
+      console.error('❌ Error en upload:', err)
       setError(err instanceof Error ? err.message : 'Error desconocido')
     } finally {
       setUploading(false)
+      console.log('🔵 Upload finalizado')
     }
   }
 

@@ -15,9 +15,11 @@ interface ParameterControlsProps {
     reliefEnabled?: boolean
   }
   onChange: (params: any) => void
+  onGenerate?: () => void
+  isGenerating?: boolean
 }
 
-export default function ParameterControls({ parameters, onChange }: ParameterControlsProps) {
+export default function ParameterControls({ parameters, onChange, onGenerate, isGenerating }: ParameterControlsProps) {
   const updateParam = (key: string, value: any) => {
     onChange({ ...parameters, [key]: value })
   }
@@ -237,9 +239,11 @@ export default function ParameterControls({ parameters, onChange }: ParameterCon
 
       {/* Botón Generar */}
       <button
-        className="w-full py-3 bg-primary-600 text-white rounded-lg font-semibold hover:bg-primary-700 transition-colors shadow-lg"
+        onClick={onGenerate}
+        disabled={!onGenerate || isGenerating}
+        className="w-full py-3 bg-primary-600 text-white rounded-lg font-semibold hover:bg-primary-700 transition-colors shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        🚀 Generar Llavero 3D
+        {isGenerating ? '⏳ Generando...' : '🚀 Generar Llavero 3D'}
       </button>
     </div>
   )

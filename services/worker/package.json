@@ -10,23 +10,25 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "bullmq": "^5.29.2",
-    "ioredis": "^5.4.2",
     "@prisma/client": "^6.1.0",
-    "sharp": "^0.33.5",
-    "potrace": "^2.1.8",
-    "winston": "^3.17.0",
+    "@types/jszip": "^3.4.0",
+    "bullmq": "^5.29.2",
     "dotenv": "^16.4.7",
-    "uuid": "^11.0.5"
+    "ioredis": "^5.4.2",
+    "jszip": "^3.10.1",
+    "potrace": "^2.1.8",
+    "sharp": "^0.33.5",
+    "uuid": "^11.0.5",
+    "winston": "^3.17.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/uuid": "^10.0.0",
-    "typescript": "^5.7.2",
-    "tsx": "^4.19.2",
-    "prisma": "^6.1.0",
-    "eslint": "^8.57.1",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
-    "@typescript-eslint/parser": "^7.18.0"
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.1",
+    "prisma": "^6.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
   }
 }
