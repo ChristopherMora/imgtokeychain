@@ -1,5 +1,20 @@
 # 📋 TAREAS DEL PROYECTO - Imagen a Llavero 3D
 
+cd /home/mora/imgtokeychain && git commit -m "feat: Agregar extracción de colores dominantes y personalización de borde/relieve
+
+- Implementar extracción de colores dominantes de imágenes con Sharp
+- Agregar campo dominantColors a schema de Prisma (API y Worker)
+- Actualizar frontend para mostrar colores extraídos en Preview3D
+- Añadir controles UI para borde y relieve personalizables
+- Mejorar descarga de STL con streaming y headers correctos
+- Corregir inversión de imágenes en preprocessing
+- Normalizar estado de jobs (uppercase a lowercase)
+- Agregar soporte para ASCII STL en parser del frontend
+- Actualizar rutas de almacenamiento con path.resolve
+- Añadir documentación completa de desarrollo local
+- Crear scripts de inicio/parada de servicios
+- Implementar tests básicos con Jest para API"
+
 **Proyecto:** imgtokeychai  
 **Última actualización:** 16 de enero de 2026  
 **Estado:** 🚀 Inicio

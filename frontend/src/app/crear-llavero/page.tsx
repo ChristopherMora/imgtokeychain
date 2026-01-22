@@ -6,6 +6,7 @@ import ParameterControls from '@/components/ParameterControls'
 import Preview2D from '@/components/Preview2D'
 import Preview3D from '@/components/Preview3D'
 import JobStatus from '@/components/JobStatus'
+import ColorPicker from '@/components/ColorPicker'
 
 export default function CrearLlaveroPage() {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
@@ -13,6 +14,7 @@ export default function CrearLlaveroPage() {
   const [jobId, setJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<string>('pending')
   const [dominantColors, setDominantColors] = useState<string[]>([])
+  const [refreshPreview, setRefreshPreview] = useState(0) // Trigger for refreshing preview
   const [isGenerating, setIsGenerating] = useState(false)
   const [parameters, setParameters] = useState({
     width: 50,
@@ -116,6 +118,21 @@ export default function CrearLlaveroPage() {
                 />
               </div>
             )}
+
+            {/* Color Picker - Personalizar Colores */}
+            {jobId && jobStatus === 'COMPLETED' && dominantColors.length > 0 && (
+              <div className="bg-white rounded-xl shadow-lg p-6">
+                <ColorPicker 
+                  jobId={jobId}
+                  initialColors={dominantColors}
+                  onColorsChange={(newColors) => {
+                    setDominantColors(newColors)
+                    // Trigger preview refresh
+                    setRefreshPreview(prev => prev + 1)
+                  }}
+                />
+              </div>
+            )}
           </div>
 
           {/* Panel Derecho - Preview */}
@@ -137,6 +154,7 @@ export default function CrearLlaveroPage() {
                   status={jobStatus} 
                   dominantColors={dominantColors} 
                   originalImage={uploadedImage || undefined}
+                  key={`preview-${refreshPreview}`}
                 />
               </div>
             )}

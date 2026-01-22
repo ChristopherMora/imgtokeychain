@@ -9,9 +9,9 @@ export const extractDominantColors = async (inputPath: string): Promise<string[]
   try {
     const image = sharp(inputPath)
     
-    // Resize to medium size for better color sampling
+    // Resize to larger size for better color sampling and gradient capture
     const { data, info } = await image
-      .resize(200, 200, { fit: 'inside' })
+      .resize(400, 400, { fit: 'inside' })
       .removeAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true })
@@ -28,10 +28,13 @@ export const extractDominantColors = async (inputPath: string): Promise<string[]
       // Skip very bright colors (near-white backgrounds)
       if (r > 245 && g > 245 && b > 245) continue
       
-      // Quantize with smaller steps (20) for better color variety, and clamp to 0-255
-      const rr = Math.min(255, Math.round(r / 20) * 20)
-      const gg = Math.min(255, Math.round(g / 20) * 20)
-      const bb = Math.min(255, Math.round(b / 20) * 20)
+      // Skip very dark colors (near-black, likely noise/antialiasing)
+      if (r < 40 && g < 40 && b < 40) continue
+      
+      // Quantize with smaller steps (15) for better color variety in gradients
+      const rr = Math.min(255, Math.round(r / 15) * 15)
+      const gg = Math.min(255, Math.round(g / 15) * 15)
+      const bb = Math.min(255, Math.round(b / 15) * 15)
       
       // Calculate saturation and hue for color analysis
       const max = Math.max(rr, gg, bb)
@@ -68,9 +71,22 @@ export const extractDominantColors = async (inputPath: string): Promise<string[]
       hue: data.hue,
     }))
     
-    // Filter out low-saturation colors if we have enough saturated ones
-    const saturatedColors = colorArray.filter(c => c.saturation > 0.2)
-    const colorsToUse = saturatedColors.length >= 3 ? saturatedColors : colorArray
+    // Filter out background colors (too frequent) and low-saturation colors
+    const totalPixels = colorArray.reduce((sum, c) => sum + c.count, 0)
+    
+    // Exclude colors that:
+    // 1. Take up more than 60% of the image (likely background)
+    // 2. Have very low saturation (grays, near-white, near-black)
+    // 3. Have very few pixels (< 2% of image)
+    const foregroundColors = colorArray.filter(c => {
+      const percentage = c.count / totalPixels
+      return percentage < 0.6 && percentage > 0.01 && c.saturation > 0.15
+    })
+    
+    // If we don't have at least 2 colors, be less strict
+    const colorsToUse = foregroundColors.length >= 2 
+      ? foregroundColors 
+      : colorArray.filter(c => c.saturation > 0.12 && (c.count / totalPixels) > 0.005)
     
     // Sort by saturation first (most vibrant), then frequency
     colorsToUse.sort((a, b) => {
@@ -82,7 +98,7 @@ export const extractDominantColors = async (inputPath: string): Promise<string[]
     // Select diverse colors (avoid similar hues)
     const selectedColors: typeof colorsToUse = []
     for (const color of colorsToUse) {
-      if (selectedColors.length >= 5) break
+      if (selectedColors.length >= 2) break  // Limitar a 2 colores principales
       
       // Check if this color is sufficiently different from already selected ones
       const isDifferent = selectedColors.every(selected => {
@@ -90,7 +106,8 @@ export const extractDominantColors = async (inputPath: string): Promise<string[]
           Math.abs(color.hue - selected.hue),
           360 - Math.abs(color.hue - selected.hue)
         )
-        return hueDiff > 30 || Math.abs(color.saturation - selected.saturation) > 0.3
+        // Requiere diferencia de HUE más grande (45 grados) para evitar variaciones
+        return hueDiff > 45 || Math.abs(color.saturation - selected.saturation) > 0.4
       })
       
       if (isDifferent || selectedColors.length === 0) {
@@ -122,7 +139,7 @@ export const extractDominantColors = async (inputPath: string): Promise<string[]
   }
 }
 
-export const preprocessImage = async (inputPath: string, jobId: string): Promise<string> => {
+export const preprocessImage = async (inputPath: string, jobId: string, threshold: number = 180): Promise<string> => {
   try {
     // Cambio a formato PGM (Portable GrayMap) que Potrace puede leer
     const outputPath = path.join(STORAGE_PATH, 'processed', `${jobId}_processed.pgm`)
@@ -145,23 +162,43 @@ export const preprocessImage = async (inputPath: string, jobId: string): Promise
     
     // Convertir a blanco y negro: blanco puro = fondo, todo lo demás = objeto
     // Potrace espera: negro = área sólida del objeto, blanco = fondo/hueco
-    const buffer = await processedImage
-      .greyscale()
-      .linear(1.5, -50) // Aumentar contraste
-      .threshold(240) // Solo blanco puro (>240) se vuelve blanco, resto negro
-      // NO negate - queremos que los colores del logo se vuelvan negros (sólidos)
-      .median(2) // Limpiar ruido
+    
+    // Estrategia: detectar píxeles que NO son blancos (cualquier color del logo)
+    const rawBuffer = await processedImage
       .raw()
       .toBuffer({ resolveWithObject: true })
+    
+    const { data, info } = rawBuffer
+    const width = info.width
+    const height = info.height
+    const channels = info.channels
+    
+    // Crear buffer para imagen binaria (blanco/negro)
+    const binaryBuffer = Buffer.alloc(width * height)
+    
+    for (let i = 0; i < data.length; i += channels) {
+      const r = data[i]
+      const g = data[i + 1]
+      const b = data[i + 2]
+      
+      const pixelIndex = Math.floor(i / channels)
+      
+      // Si el píxel NO es blanco (cualquier color del logo/contenido)
+      // Considerar blanco solo si R, G y B están todos por encima del threshold
+      if (r < threshold || g < threshold || b < threshold) {
+        binaryBuffer[pixelIndex] = 0 // Negro = contenido sólido
+      } else {
+        binaryBuffer[pixelIndex] = 255 // Blanco = fondo
+      }
+    }
 
     // Crear archivo PGM manualmente (formato binario P5)
-    const { data, info } = buffer
     const fs = require('fs')
     
     // Formato PGM P5 (binario)
-    const header = `P5\n${info.width} ${info.height}\n255\n`
+    const header = `P5\n${width} ${height}\n255\n`
     const headerBuffer = Buffer.from(header, 'ascii')
-    const pgmBuffer = Buffer.concat([headerBuffer, data])
+    const pgmBuffer = Buffer.concat([headerBuffer, binaryBuffer])
     
     fs.writeFileSync(outputPath, pgmBuffer)
 

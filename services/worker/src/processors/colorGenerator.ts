@@ -2,6 +2,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import { logger } from '../utils/logger'
 import JSZip from 'jszip'
+import { parseSTL, STLData, calculateBoundingBox } from './stlParser'
 
 /**
  * Genera un 3MF multi-objeto desde múltiples STLs coloreados
@@ -16,20 +17,19 @@ export const generate3MFFromColorSTLs = async (
     
     logger.info(`[${jobId}] Creating 3MF with ${colorSTLs.length} colored objects`)
     
+    // Parsear todos los STLs para obtener geometría
+    const parsedSTLs: Array<{ color: string; data: STLData }> = []
+    for (const item of colorSTLs) {
+      logger.info(`[${jobId}] Parsing STL: ${item.stlPath}`)
+      const stlData = await parseSTL(item.stlPath)
+      parsedSTLs.push({ color: item.color, data: stlData })
+    }
+    
     // Crear el archivo 3MF (es un ZIP)
     const zip = new JSZip()
     
-    // Leer todos los STLs y agregarlos al 3MF
-    const stlContents: Buffer[] = []
-    for (let i = 0; i < colorSTLs.length; i++) {
-      const content = await fs.readFile(colorSTLs[i].stlPath)
-      stlContents.push(content)
-      // Agregar STL al ZIP con nombre único
-      zip.file(`3D/object_${i}.stl`, content)
-    }
-    
-    // Crear el archivo de modelo 3D XML con múltiples objetos
-    const modelXml = create3MFModelMultiObject(colorSTLs, stlContents)
+    // Crear el archivo de modelo 3D XML con múltiples objetos y geometría real
+    const modelXml = create3MFModelMultiObject(parsedSTLs, jobId)
     zip.file('3D/3dmodel.model', modelXml)
     
     // Crear el archivo de relaciones
@@ -62,41 +62,56 @@ export const generate3MFFromColorSTLs = async (
 }
 
 /**
- * Crea el archivo de modelo 3D XML con múltiples objetos coloreados
+ * Crea el archivo de modelo 3D XML con múltiples objetos coloreados (uno por color)
+ * Esto es lo que Bambu Studio espera - múltiples objetos, cada uno con su color asignado
  */
 function create3MFModelMultiObject(
-  colorSTLs: { color: string; stlPath: string }[],
-  stlContents: Buffer[]
+  parsedSTLs: Array<{ color: string; data: STLData }>,
+  jobId: string
 ): string {
-  // Crear materiales para cada color
-  const materialsXml = colorSTLs.map((item, index) => {
-    return `      <base name="Color ${index + 1}" displaycolor="${item.color}" />`
-  }).join('\n')
-  
-  // Crear componentes (referencias a STLs externos)
-  const componentsXml = colorSTLs.map((item, index) => {
-    return `    <object id="${index + 10}" type="model" partnumber="Part${index + 1}">
-      <components>
-        <component objectid="${index + 100}" transform="1 0 0 0 1 0 0 0 1 0 0 0" />
-      </components>
+  // Crear un objeto por cada color
+  const objectsXml = parsedSTLs.map((item, colorIndex) => {
+    const { data } = item
+    const { vertices, triangles } = data
+    
+    // Generar vértices XML
+    const verticesXml = vertices.map(v => 
+      `          <vertex x="${v.x.toFixed(6)}" y="${v.y.toFixed(6)}" z="${v.z.toFixed(6)}" />`
+    ).join('\n')
+    
+    // Generar triángulos XML (referencing vertex indices directly)
+    const trianglesXml = triangles.map(tri => 
+      `          <triangle v1="${tri[0]}" v2="${tri[1]}" v3="${tri[2]}" />`
+    ).join('\n')
+    
+    return `    <object id="${colorIndex + 2}" type="model" name="Color_${colorIndex + 1}">
+      <mesh>
+        <vertices>
+${verticesXml}
+        </vertices>
+        <triangles>
+${trianglesXml}
+        </triangles>
+      </mesh>
     </object>`
   }).join('\n')
   
-  // Crear items en el build (uno por color)
-  const buildItemsXml = colorSTLs.map((item, index) => {
-    return `    <item objectid="${index + 10}" />`
-  }).join('\n')
+  // Crear references a los objetos en el build
+  const buildItemsXml = parsedSTLs.map((item, colorIndex) => 
+    `    <item objectid="${colorIndex + 2}" />`
+  ).join('\n')
   
   return `<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">
-  <metadata name="Title">Multi-Color Keychain</metadata>
+<model unit="millimeter" xml:lang="en-US" 
+  xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" 
+  xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02"
+  xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/02">
+  <metadata name="Title">Multi-Color Keychain - ${jobId}</metadata>
   <metadata name="Designer">ImgToKeychain</metadata>
-  <metadata name="Description">Multi-color 3D model for printing</metadata>
+  <metadata name="Description">Multi-color 3D model ready for printing on Bambu Lab printer</metadata>
+  <metadata name="Application">ImgToKeychain v1.0</metadata>
   <resources>
-    <basematerials id="1">
-${materialsXml}
-    </basematerials>
-${componentsXml}
+${objectsXml}
   </resources>
   <build>
 ${buildItemsXml}

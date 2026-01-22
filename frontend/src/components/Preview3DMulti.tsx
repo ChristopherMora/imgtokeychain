@@ -9,16 +9,15 @@ interface Preview3DProps {
   jobId: string
   status?: string
   dominantColors?: string[]
-  originalImage?: string
 }
 
-interface MultiSTLModel {
+interface STLModelData {
   stlData: ArrayBuffer
   color: string
   index: number
 }
 
-function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color?: string; index: number }) {
+function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color: string; index: number }) {
   const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null)
   
   // ASCII STL parser
@@ -27,7 +26,6 @@ function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color?: str
     const vertices: number[] = []
     const normals: number[] = []
     
-    // Match all vertices and normals
     const vertexPattern = /vertex\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)/g
     const normalPattern = /facet\s+normal\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)/g
     
@@ -48,7 +46,6 @@ function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color?: str
         parseFloat(vertexMatch[5])
       )
       
-      // Each facet has 3 vertices, all share the same normal
       if (normalList[facetIndex]) {
         normals.push(...normalList[facetIndex])
       }
@@ -69,18 +66,16 @@ function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color?: str
   }
   
   useEffect(() => {
-    // Parse STL (supports both ASCII and binary formats)
     const parseSTL = (buffer: ArrayBuffer): THREE.BufferGeometry => {
       const view = new DataView(buffer)
       const text = new TextDecoder().decode(buffer.slice(0, 80))
       const isAscii = /^solid/i.test(text.trim())
       
       if (isAscii) {
-        // Parse ASCII STL
         return parseAsciiSTL(buffer)
       }
       
-      // Binary STL format
+      // Binary STL
       const faces = view.getUint32(80, true)
       const vertices: number[] = []
       const normals: number[] = []
@@ -88,12 +83,10 @@ function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color?: str
       for (let i = 0; i < faces; i++) {
         const offset = 84 + i * 50
         
-        // Normal
         const nx = view.getFloat32(offset, true)
         const ny = view.getFloat32(offset + 4, true)
         const nz = view.getFloat32(offset + 8, true)
         
-        // 3 vertices per face
         for (let j = 0; j < 3; j++) {
           const vOffset = offset + 12 + j * 12
           vertices.push(
@@ -123,7 +116,7 @@ function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color?: str
   
   if (!geometry) return null
   
-  // Center and scale the geometry
+  // Center and scale
   geometry.center()
   geometry.computeBoundingBox()
   const boundingBox = geometry.boundingBox!
@@ -132,82 +125,33 @@ function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color?: str
   const maxDim = Math.max(size.x, size.y, size.z)
   const scale = 3 / maxDim
   
-  // Usar color recibido por prop o azul por defecto
-  const modelColor = color || '#0ea5e9'
   return (
-    <mesh geometry={geometry} scale={scale}>
-      <meshStandardMaterial color={modelColor} metalness={0.3} roughness={0.4} />
+    <mesh geometry={geometry} scale={scale} castShadow receiveShadow>
+      <meshStandardMaterial 
+        color={color} 
+        metalness={0.3} 
+        roughness={0.4}
+      />
     </mesh>
   )
 }
 
 export default function Preview3D({ jobId, status, dominantColors }: Preview3DProps) {
-  const [stlModels, setStlModels] = useState<MultiSTLModel[]>([])
+  const [stlModels, setStlModels] = useState<STLModelData[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    // Only fetch STL when job is completed
     if (status === 'COMPLETED' || status === 'completed') {
       setLoading(true)
       setError(null)
       
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api'
       
-      // Check if we have multiple colors
-      const hasMultipleColors = dominantColors && dominantColors.length > 1
+      // Load main STL first (always available)
+      const mainUrl = `${apiUrl}/jobs/${jobId}/download`
       
-      if (hasMultipleColors) {
-        // Load all color STLs
-        const loadPromises = dominantColors!.map((color, index) => {
-          const url = `${apiUrl}/jobs/${jobId}/color/${index}`
-          return fetch(url)
-            .then(response => {
-              if (!response.ok) throw new Error(`Color ${index} STL not available`)
-              return response.arrayBuffer()
-            })
-            .then(buffer => ({ stlData: buffer, color, index }))
-            .catch(err => {
-              console.warn(`Preview3D: Could not load color ${index}:`, err)
-              // Return null on error, we'll filter it out
-              return null
-            })
-        })
-        
-        Promise.all(loadPromises)
-          .then(models => {
-            // Filter out null models (failed downloads)
-            const validModels = models.filter((m): m is MultiSTLModel => m !== null)
-            
-            if (validModels.length === 0) {
-              // If all color STLs failed, fall back to main STL
-              console.warn('Preview3D: All color STLs failed, falling back to main STL')
-              loadMainSTL()
-            } else {
-              console.log(`Preview3D: Loaded ${validModels.length} color STLs`)
-              setStlModels(validModels)
-              setLoading(false)
-            }
-          })
-          .catch(err => {
-            console.error('Preview3D: Error loading color STLs, falling back to main:', err)
-            // Fallback to main STL
-            loadMainSTL()
-          })
-      } else {
-        // Load single main STL
-        loadMainSTL()
-      }
-    } else if (status === 'FAILED' || status === 'failed') {
-      setError('Error en generación')
-      setLoading(false)
-    }
-    
-    function loadMainSTL() {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api'
-      const url = `${apiUrl}/jobs/${jobId}/download`
-      
-      fetch(url)
+      fetch(mainUrl)
         .then(response => {
           if (!response.ok) throw new Error('STL no disponible')
           return response.arrayBuffer()
@@ -216,14 +160,18 @@ export default function Preview3D({ jobId, status, dominantColors }: Preview3DPr
           const mainColor = dominantColors && dominantColors.length > 0 
             ? dominantColors[0] 
             : '#0ea5e9'
+          
           setStlModels([{ stlData: buffer, color: mainColor, index: 0 }])
           setLoading(false)
         })
         .catch(err => {
-          console.error('Preview3D: Error loading STL:', err)
+          console.error('Error loading STL:', err)
           setError(err.message || 'Error al cargar STL')
           setLoading(false)
         })
+    } else if (status === 'FAILED' || status === 'failed') {
+      setError('Error en generación')
+      setLoading(false)
     }
   }, [jobId, status, dominantColors])
 
@@ -252,12 +200,10 @@ export default function Preview3D({ jobId, status, dominantColors }: Preview3DPr
   return (
     <div className="aspect-square bg-gray-900 rounded-lg overflow-hidden relative">
       <Canvas camera={{ position: [0, 0, 5], fov: 50 }}>
-        {/* Iluminación */}
         <ambientLight intensity={0.5} />
         <directionalLight position={[10, 10, 5]} intensity={1} />
         <pointLight position={[-10, -10, -5]} intensity={0.5} />
 
-        {/* Multiple STL Models */}
         <Suspense fallback={null}>
           {stlModels.map((model) => (
             <STLModel 
@@ -269,7 +215,6 @@ export default function Preview3D({ jobId, status, dominantColors }: Preview3DPr
           ))}
         </Suspense>
 
-        {/* Grid */}
         <Grid
           args={[10, 10]}
           cellSize={0.5}
@@ -283,7 +228,6 @@ export default function Preview3D({ jobId, status, dominantColors }: Preview3DPr
           followCamera={false}
         />
 
-        {/* Controles */}
         <OrbitControls
           enablePan={true}
           enableZoom={true}
@@ -292,11 +236,9 @@ export default function Preview3D({ jobId, status, dominantColors }: Preview3DPr
           maxDistance={10}
         />
 
-        {/* Environment */}
         <Environment preset="studio" />
       </Canvas>
 
-      {/* Controles overlay */}
       <div className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
         🖱️ Click y arrastra para rotar • Scroll para zoom
       </div>

@@ -6,7 +6,9 @@ import { preprocessImage, extractDominantColors } from './imagePreprocessor'
 import { imageToSvg } from './svgGenerator'
 import { svgToStl } from './stlGenerator'
 import { addRing } from './ringGenerator'
-import { segmentByColors } from './colorSegmentation'
+import { segmentByColorsWithSilhouette } from './colorSegmentation'
+import { generate3MFFromColorSTLs } from './colorGenerator'
+import { removeBackground, extractColorsFromForeground } from './backgroundRemover'
 
 const prisma = new PrismaClient()
 
@@ -45,33 +47,80 @@ export const processImageJob = async (data: JobData) => {
 
     logger.info(`[${jobId}] Starting image preprocessing...`)
     
-    // Step 0: Extract dominant colors from original image
-    logger.info(`[${jobId}] Extracting dominant colors...`)
-    const dominantColors = await extractDominantColors(filePath)
+    // === NUEVO ENFOQUE: Primero remover el fondo ===
+    
+    // Step 1: Remove background and create silhouette mask
+    logger.info(`[${jobId}] Step 1: Removing background...`)
+    const { cleanImagePath, silhouetteMaskPath, width, height } = await removeBackground(
+      filePath,
+      jobId,
+      STORAGE_PATH
+    )
+    
+    // Leer la máscara de silueta para usarla en la extracción de colores
+    const silhouetteMaskData = await fs.readFile(silhouetteMaskPath)
+    // Extraer solo los datos binarios (saltar el header PGM)
+    const headerEnd = silhouetteMaskData.indexOf(0x0a, silhouetteMaskData.indexOf(0x0a, 3) + 1) + 1
+    const silhouetteMask = silhouetteMaskData.slice(headerEnd)
+    
     await prisma.job.update({
       where: { id: jobId },
-      data: { dominantColors, progress: 5 },
+      data: { progress: 15 },
+    })
+    
+    // Step 2: Extract dominant colors from FOREGROUND ONLY
+    logger.info(`[${jobId}] Step 2: Extracting colors from foreground...`)
+    const dominantColors = await extractColorsFromForeground(
+      filePath,
+      silhouetteMask,
+      width,
+      height,
+      jobId
+    )
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { dominantColors, progress: 20 },
     })
     logger.info(`[${jobId}] Dominant colors: ${dominantColors.join(', ')}`)
     
-    // Step 0.5: Segment image by colors (create masks)
-    logger.info(`[${jobId}] Segmenting image by colors...`)
-    const colorMasks = await segmentByColors(filePath, dominantColors, jobId, STORAGE_PATH)
+    // Step 3: Segment colors WITHIN the silhouette
+    logger.info(`[${jobId}] Step 3: Segmenting colors within silhouette...`)
+    const colorMasks = await segmentByColorsWithSilhouette(
+      filePath,
+      dominantColors,
+      silhouetteMask,
+      width,
+      height,
+      jobId,
+      STORAGE_PATH
+    )
     logger.info(`[${jobId}] Created ${colorMasks.length} color masks`)
+    
+    if (colorMasks.length === 0) {
+      throw new Error('No colors detected in image. Try adjusting the threshold.')
+    }
+    
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { progress: 20 },
+    })
     
     // Arrays to hold STLs per color
     const colorSTLs: { color: string; stlPath: string }[] = []
     
-    // Process each color mask separately
+    // Step 3: Process each color mask separately
     for (let i = 0; i < colorMasks.length; i++) {
       const { color, maskPath } = colorMasks[i]
-      logger.info(`[${jobId}] Processing color ${color}...`)
-      logger.info(`[${jobId}] Converting mask to SVG: ${maskPath}`)
+      const progressBase = 20 + (i * 40 / colorMasks.length)
+      
+      logger.info(`[${jobId}] Processing color ${i + 1}/${colorMasks.length}: ${color}`)
       
       // Convert mask to SVG
       const svgPath = await imageToSvg(maskPath, `${jobId}_color${i}`)
-      logger.info(`[${jobId}] SVG conversion completed for ${color}`)
-      logger.info(`[${jobId}] SVG for ${color}: ${svgPath}`)
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { progress: Math.round(progressBase + 10) },
+      })
       
       // Generate STL from SVG
       const stlPath = await svgToStl(svgPath, `${jobId}_color${i}`, {
@@ -85,101 +134,91 @@ export const processImageJob = async (data: JobData) => {
       
       colorSTLs.push({ color, stlPath })
       logger.info(`[${jobId}] STL for ${color}: ${stlPath}`)
+      
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { progress: Math.round(progressBase + 20) },
+      })
     }
+    
+    // Step 4: Generate 3MF with all colored objects
+    logger.info(`[${jobId}] Creating multi-color 3MF...`)
+    const mfPath = await generate3MFFromColorSTLs(colorSTLs, jobId, STORAGE_PATH)
     
     await prisma.job.update({
       where: { id: jobId },
-      data: { progress: 70 },
+      data: { 
+        stlPath: colorSTLs[0].stlPath, // First STL for preview
+        progress: 70 
+      },
     })
     
-    // Step 3.5: Generate 3MF with multiple colored objects
-    // NOTA: 3MF multi-objeto requiere parsear STLs y convertir a mesh XML nativo
-    // Por ahora, ofrecemos los STLs individuales que el usuario puede importar manualmente
-    logger.info(`[${jobId}] Multi-color STLs generated successfully`)
-    logger.info(`[${jobId}] Generated ${colorSTLs.length} color-separated STL files`)
+    // Step 5: Add ring if enabled (to first object only for now)
+    let finalStlPath = colorSTLs[0].stlPath
+    if (params.ringEnabled) {
+      logger.info(`[${jobId}] Adding ring...`)
+      finalStlPath = await addRing(colorSTLs[0].stlPath, jobId, {
+        diameter: params.ringDiameter,
+        thickness: params.ringThickness,
+        position: params.ringPosition,
+      })
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { stlPath: finalStlPath },
+      })
+    }
     
-    // Save color configuration file for reference
-    const colorConfigPath = path.join(STORAGE_PATH, 'processed', `${jobId}_colors.json`)
+    // Step 6: Create ZIP with all color STLs for manual use
+    logger.info(`[${jobId}] Creating ZIP with individual STLs...`)
+    const JSZip = (await import('jszip')).default
+    const zip = new JSZip()
+    
+    // Add all STL files
+    for (let i = 0; i < colorSTLs.length; i++) {
+      const { color, stlPath } = colorSTLs[i]
+      const stlContent = await fs.readFile(stlPath)
+      const fileName = `color_${i + 1}_${color.replace('#', '')}.stl`
+      zip.file(fileName, stlContent)
+    }
+    
+    // Add 3MF file
+    const mfContent = await fs.readFile(mfPath)
+    zip.file(`${jobId}_multicolor.3mf`, mfContent)
+    
+    // Add color configuration JSON
     const colorConfig = {
-      format: '1.0',
+      version: '1.0',
+      jobId,
       totalColors: colorSTLs.length,
       colors: colorSTLs.map((item, index) => ({
         id: index + 1,
         hex: item.color,
         name: `Color ${index + 1}`,
-        stlFile: path.basename(item.stlPath),
-        downloadUrl: `/jobs/${jobId}/download-color/${index}`
+        stlFile: `color_${index + 1}_${item.color.replace('#', '')}.stl`
       })),
+      files: {
+        threemf: `${jobId}_multicolor.3mf`,
+        stls: colorSTLs.map((item, i) => `color_${i + 1}_${item.color.replace('#', '')}.stl`)
+      },
       instructions: {
-        es: `Este llavero tiene ${colorSTLs.length} colores separados. Cada color está en un archivo STL individual. Importa todos los STLs en Bambu Studio/PrusaSlicer y asigna el color correspondiente a cada pieza.`,
-        en: `This keychain has ${colorSTLs.length} separated colors. Each color is in an individual STL file. Import all STLs into Bambu Studio/PrusaSlicer and assign the corresponding color to each part.`
-      },
-      files: colorSTLs.map((item, index) => path.basename(item.stlPath))
-    }
-    await fs.writeFile(colorConfigPath, JSON.stringify(colorConfig, null, 2))
-    logger.info(`[${jobId}] Color config saved: ${colorConfigPath}`)
-    
-    // Use the first STL as the main one for download compatibility
-    const stlPath = colorSTLs.length > 0 ? colorSTLs[0].stlPath : ''
-    
-    // Update final status with multi-color info
-    await prisma.job.update({
-      where: { id: jobId },
-      data: { 
-        stlPath, // First color STL for preview
-        progress: 90 
-      },
-    })
-    
-    logger.info(`[${jobId}] Multi-color processing completed successfully!`)
-    logger.info(`[${jobId}] - Main STL (color 1): ${stlPath}`)
-    logger.info(`[${jobId}] - Total color STLs: ${colorSTLs.length}`)
-    logger.info(`[${jobId}] - Color config: ${colorConfigPath}`)
-    
-    // Create a ZIP file with all color STLs for easy download
-    logger.info(`[${jobId}] Creating ZIP with all color STLs...`)
-    const JSZip = (await import('jszip')).default
-    const zip = new JSZip()
-    
-    // Add all STL files to ZIP
-    for (let i = 0; i < colorSTLs.length; i++) {
-      const { color, stlPath: colorStlPath } = colorSTLs[i]
-      const stlContent = await fs.readFile(colorStlPath)
-      const fileName = `color_${i + 1}_${color.replace('#', '')}.stl`
-      zip.file(fileName, stlContent)
+        es: `Este archivo contiene:\n1. Un archivo 3MF listo para Bambu Studio/PrusaSlicer con ${colorSTLs.length} colores\n2. ${colorSTLs.length} archivos STL individuales por si necesitas importarlos manualmente\n\nPara usar el 3MF:\n- Abre ${jobId}_multicolor.3mf en tu slicer\n- Los colores ya están asignados\n- Ajusta configuración de impresora y listo`,
+        en: `This file contains:\n1. A 3MF file ready for Bambu Studio/PrusaSlicer with ${colorSTLs.length} colors\n2. ${colorSTLs.length} individual STL files in case you need to import them manually\n\nTo use the 3MF:\n- Open ${jobId}_multicolor.3mf in your slicer\n- Colors are already assigned\n- Adjust printer settings and you're ready`
+      }
     }
     
-    // Add color JSON to ZIP
     zip.file('colors.json', JSON.stringify(colorConfig, null, 2))
+    zip.file('README.txt', `${colorConfig.instructions.es}\n\n---\n\n${colorConfig.instructions.en}`)
     
-    // Add instructions
-    const instructions = `INSTRUCCIONES / INSTRUCTIONS
-
-ES:
-1. Extrae todos los archivos STL de este ZIP
-2. Abre Bambu Studio o PrusaSlicer  
-3. Importa TODOS los archivos STL (${colorSTLs.length} archivos)
-4. En la lista de objetos, selecciona cada pieza y asigna el color indicado en colors.json
-5. Los colores son:
-${colorSTLs.map((item, i) => `   - color_${i + 1}_${item.color.replace('#', '')}.stl → ${item.color}`).join('\n')}
-
-EN:
-1. Extract all STL files from this ZIP
-2. Open Bambu Studio or PrusaSlicer
-3. Import ALL STL files (${colorSTLs.length} files)
-4. In the object list, select each part and assign the color indicated in colors.json
-5. Colors are:
-${colorSTLs.map((item, i) => `   - color_${i + 1}_${item.color.replace('#', '')}.stl → ${item.color}`).join('\n')}
-`
-    zip.file('INSTRUCTIONS.txt', instructions)
-    
-    // Generate ZIP file
+    // Generate ZIP
     const zipPath = path.join(STORAGE_PATH, 'processed', `${jobId}_multicolor.zip`)
     const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' })
     await fs.writeFile(zipPath, zipBuffer)
     logger.info(`[${jobId}] Multi-color ZIP created: ${zipPath}`)
     
-    // Skip ring generation for now (complex to add to multiple STLs)
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { progress: 90 },
+    })
     
     // Mark job as completed
     await prisma.job.update({

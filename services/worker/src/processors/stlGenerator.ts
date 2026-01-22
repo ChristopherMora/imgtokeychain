@@ -36,6 +36,10 @@ export const svgToStl = async (
     
     let scadScript: string
     
+    // El SVG mantiene su tamaño original (sin transform interno de Potrace)
+    // Usamos resize() de OpenSCAD para ajustar a las dimensiones solicitadas
+    // resize([width, height, 0], auto=true) mantiene proporciones
+
     if (borderEnabled && reliefEnabled) {
       // Modo con borde Y relieve
       const baseThickness = 1
@@ -49,20 +53,20 @@ difference() {
     linear_extrude(height = ${baseThickness}, center = true)
       offset(r = ${borderThickness})
         offset(delta = ${borderThickness})
-          scale([${params.width}, ${params.height}, 1])
+          resize([${params.width}, ${params.height}, 0], auto=true)
             import("${svgPath}", center = true);
   
   // Restar logo para hueco
   translate([0, 0, ${baseThickness}])
     linear_extrude(height = ${reliefHeight} + 1)
-      scale([${params.width}, ${params.height}, 1])
+      resize([${params.width}, ${params.height}, 0], auto=true)
         import("${svgPath}", center = true);
 }
 
 // Logo en relieve
 translate([0, 0, ${baseThickness}])
   linear_extrude(height = ${reliefHeight})
-    scale([${params.width}, ${params.height}, 1])
+    resize([${params.width}, ${params.height}, 0], auto=true)
       import("${svgPath}", center = true);
 `
     } else if (borderEnabled) {
@@ -72,7 +76,7 @@ translate([0, 0, ${baseThickness}])
 linear_extrude(height = ${params.thickness}) {
   offset(r = ${borderThickness})
     offset(delta = ${borderThickness})
-      scale([${params.width}, ${params.height}, 1])
+      resize([${params.width}, ${params.height}, 0], auto=true)
         import("${svgPath}", center = true);
 }
 `
@@ -81,7 +85,7 @@ linear_extrude(height = ${params.thickness}) {
       scadScript = `
 // Llavero simple ${jobId}
 linear_extrude(height = ${params.thickness}) {
-  scale([${params.width}, ${params.height}, 1]) {
+  resize([${params.width}, ${params.height}, 0], auto=true) {
     import("${svgPath}", center = true);
   }
 }

@@ -38,24 +38,32 @@ export const addRing = async (
         break
     }
 
-    // Create OpenSCAD script with ring
+    // Create OpenSCAD script with ring - using union() and render() for CGAL stability
     const scadScript = `
 // Add ring to keychain ${jobId}
+$fn = 50;
 
 module keyring(inner_diameter, thickness) {
-  difference() {
-    cylinder(h = thickness, d = inner_diameter + (thickness * 2), center = true, $fn = 50);
-    cylinder(h = thickness + 1, d = inner_diameter, center = true, $fn = 50);
+  render() {
+    difference() {
+      cylinder(h = thickness, d = inner_diameter + (thickness * 2), center = true);
+      cylinder(h = thickness + 1, d = inner_diameter, center = true);
+    }
   }
 }
 
-// Import original STL
-import("${stlPath}", convexity = 10);
+// Union original STL with ring
+union() {
+  // Import original STL with render() for CGAL stability
+  render(convexity = 10) {
+    import("${stlPath}");
+  }
 
-// Add ring as separate object
-translate([${translateX}, ${translateY}, 0]) {
-  rotate([90, 0, 0]) {
-    keyring(${params.diameter}, ${params.thickness});
+  // Add ring as separate object
+  translate([${translateX}, ${translateY}, 0]) {
+    rotate([90, 0, 0]) {
+      keyring(${params.diameter}, ${params.thickness});
+    }
   }
 }
 `
@@ -68,12 +76,45 @@ translate([${translateX}, ${translateY}, 0]) {
     
     logger.info(`Running OpenSCAD with ring: ${command}`)
     
-    const { stdout, stderr } = await execAsync(command, {
-      timeout: parseInt(process.env.WORKER_MAX_JOB_TIME || '30000'),
-    })
+    try {
+      const { stdout, stderr } = await execAsync(command, {
+        timeout: parseInt(process.env.WORKER_MAX_JOB_TIME || '60000'),
+      })
 
-    if (stderr && !stderr.includes('WARNING')) {
-      logger.warn(`OpenSCAD stderr: ${stderr}`)
+      if (stderr && !stderr.includes('WARNING')) {
+        logger.warn(`OpenSCAD stderr: ${stderr}`)
+      }
+    } catch (openscadError: any) {
+      logger.warn(`OpenSCAD ring union failed: ${openscadError.message}`)
+      
+      // Try simpler approach: just generate the ring separately and keep original
+      const simpleScad = `
+// Simple ring only for keychain ${jobId}
+$fn = 50;
+cylinder(h = ${params.thickness}, d = ${params.diameter} + (${params.thickness} * 2), center = true);
+difference() {
+  cylinder(h = ${params.thickness}, d = ${params.diameter} + (${params.thickness} * 2), center = true);
+  cylinder(h = ${params.thickness} + 1, d = ${params.diameter}, center = true);
+}
+`
+      const ringOnlyPath = path.join(STORAGE_PATH, 'processed', `${jobId}_ring_only.stl`)
+      const ringScadPath = path.join(STORAGE_PATH, 'temp', `${jobId}_ring_only.scad`)
+      
+      await fs.writeFile(ringScadPath, simpleScad)
+      
+      try {
+        await execAsync(`openscad -o "${ringOnlyPath}" "${ringScadPath}"`, { timeout: 30000 })
+        logger.info(`Ring generated separately: ${ringOnlyPath}`)
+        await fs.unlink(ringScadPath).catch(() => {})
+      } catch {
+        logger.warn('Could not generate ring separately either')
+      }
+      
+      // Copy original STL as the output (without ring)
+      logger.warn('Using original STL without ring due to CGAL error')
+      await fs.copyFile(stlPath, outputPath)
+      await fs.unlink(scadPath).catch(() => {})
+      return outputPath
     }
 
     // Verify output

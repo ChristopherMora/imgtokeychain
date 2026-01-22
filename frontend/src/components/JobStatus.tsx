@@ -21,6 +21,7 @@ interface Job {
 export default function JobStatus({ jobId, onStatusChange, onColorsExtracted }: JobStatusProps) {
   const [job, setJob] = useState<Job | null>(null)
   const [loading, setLoading] = useState(true)
+  const [colors, setColors] = useState<string[]>([])
 
   useEffect(() => {
     if (!jobId) return
@@ -38,6 +39,11 @@ export default function JobStatus({ jobId, onStatusChange, onColorsExtracted }: 
             status: data.status.toLowerCase()
           }
           setJob(normalizedJob)
+          
+          // Update local colors state
+          if (data.dominantColors && data.dominantColors.length > 0) {
+            setColors(data.dominantColors)
+          }
           
           // Notify parent of status change
           if (onStatusChange && data.status) {
@@ -126,6 +132,27 @@ export default function JobStatus({ jobId, onStatusChange, onColorsExtracted }: 
         </div>
       </div>
 
+      {/* Colores detectados */}
+      {colors.length > 0 && (
+        <div className="p-3 bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg border border-purple-200">
+          <div className="font-semibold text-sm text-gray-700 mb-2">
+            🎨 Colores detectados ({colors.length}):
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {colors.map((color, index) => (
+              <div key={index} className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-md shadow-sm border border-gray-200">
+                <div
+                  className="w-6 h-6 rounded border-2 border-gray-300 shadow-sm"
+                  style={{ backgroundColor: color }}
+                  title={color}
+                />
+                <span className="text-xs font-mono text-gray-600">{color}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Error message */}
       {job.status === 'failed' && job.errorMessage && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm">
@@ -148,12 +175,13 @@ export default function JobStatus({ jobId, onStatusChange, onColorsExtracted }: 
           <div className="text-xs text-gray-700 mt-2 p-3 bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg border border-purple-200">
             <div className="font-bold mb-1">📦 Contenido del ZIP:</div>
             <ul className="list-disc list-inside space-y-1 text-gray-600">
-              <li>5 archivos STL (uno por cada color detectado)</li>
+              <li>Archivo 3MF listo para Bambu Studio/PrusaSlicer</li>
+              <li>{colors.length} archivos STL (uno por color detectado)</li>
               <li>colors.json con códigos hex de cada color</li>
-              <li>INSTRUCTIONS.txt con guía de importación</li>
+              <li>README.txt con guía de uso</li>
             </ul>
             <div className="mt-2 text-gray-600">
-              <strong>Cómo usar:</strong> Extrae el ZIP, importa todos los STL en Bambu Studio/PrusaSlicer, y asigna los colores indicados a cada pieza.
+              <strong>Cómo usar:</strong> Abre el archivo .3mf en tu slicer - los colores ya están asignados automáticamente. Alternativamente, importa los STL individuales del ZIP.
             </div>
           </div>
           

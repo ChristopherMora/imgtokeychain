@@ -354,3 +354,168 @@ export const downloadMulticolorZip = async (req: Request, res: Response, next: N
     next(error)
   }
 }
+
+/**
+ * Get dominant colors for a job
+ */
+export const getJobColors = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params
+
+    const job = await prisma.job.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        dominantColors: true,
+        status: true
+      }
+    })
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' })
+    }
+
+    res.json({
+      jobId: job.id,
+      colors: job.dominantColors || [],
+      status: job.status
+    })
+  } catch (error) {
+    logger.error('Error getting job colors:', error)
+    next(error)
+  }
+}
+
+/**
+ * Update dominant colors for a job and regenerate 3MF
+ */
+export const updateJobColors = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params
+    const { colors } = req.body
+
+    if (!Array.isArray(colors) || colors.length === 0) {
+      return res.status(400).json({ error: 'Colors array is required' })
+    }
+
+    // Validate hex colors
+    const hexPattern = /^#[0-9A-Fa-f]{6}$/
+    for (const color of colors) {
+      if (!hexPattern.test(color)) {
+        return res.status(400).json({ error: `Invalid hex color: ${color}` })
+      }
+    }
+
+    const job = await prisma.job.findUnique({
+      where: { id }
+    })
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' })
+    }
+
+    if (job.status !== 'COMPLETED') {
+      return res.status(400).json({ error: 'Job must be completed to update colors' })
+    }
+
+    // Update colors in database
+    await prisma.job.update({
+      where: { id },
+      data: { dominantColors: colors }
+    })
+
+    // Add regeneration task to queue
+    logger.info(`[${id}] Adding 3MF regeneration task to queue...`)
+    await jobQueue.add('regenerate-3mf', {
+      jobId: id,
+      colors: colors,
+      stlPath: job.stlPath,
+    })
+
+    res.json({
+      message: 'Colors updated and 3MF regeneration queued',
+      jobId: id,
+      colors
+    })
+  } catch (error) {
+    logger.error('Error updating job colors:', error)
+    next(error)
+  }
+}
+
+/**
+ * Download individual color STL for preview
+ */
+export const downloadColorSTL = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id, colorIndex } = req.params
+    const index = parseInt(colorIndex, 10)
+
+    logger.info(`Download color STL ${index} requested for job: ${id}`)
+
+    const job = await prisma.job.findUnique({
+      where: { id },
+      select: {
+        status: true,
+        dominantColors: true,
+        originalFilename: true,
+      },
+    })
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' })
+    }
+
+    if (job.status !== 'COMPLETED') {
+      return res.status(400).json({ error: 'Job not completed yet' })
+    }
+
+    if (!job.dominantColors || index < 0 || index >= job.dominantColors.length) {
+      return res.status(404).json({ error: `Color ${index} not found` })
+    }
+
+    // Construct the color STL file path
+    const color = job.dominantColors[index]
+    const colorSTLPath = path.join(
+      path.dirname(job.originalFilename || ''),
+      `${id}_color${index}.stl`
+    )
+
+    // Check if file exists - if not, try alternative path
+    let stlPath = colorSTLPath
+    const storagePath = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../../storage')
+    const altPath = path.join(storagePath, 'processed', `${id}_color${index}.stl`)
+    
+    if (!fs.existsSync(stlPath) && fs.existsSync(altPath)) {
+      stlPath = altPath
+    }
+
+    if (!fs.existsSync(stlPath)) {
+      logger.error(`Color STL not found: ${stlPath}`)
+      return res.status(404).json({ error: `Color ${index} STL file not found` })
+    }
+
+    const originalName = Array.isArray(job.originalFilename) ? job.originalFilename[0] : job.originalFilename
+    const filename = path.basename(originalName, path.extname(originalName))
+    
+    logger.info(`Downloading color STL: ${stlPath}`)
+    
+    res.setHeader('Content-Type', 'application/octet-stream')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}_color${index}.stl"`)
+    res.setHeader('Content-Length', fs.statSync(stlPath).size)
+    
+    const fileStream = fs.createReadStream(stlPath)
+    fileStream.pipe(res)
+    
+    fileStream.on('error', (error) => {
+      logger.error(`Error streaming color STL: ${error}`)
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Error downloading color STL' })
+      }
+    })
+  } catch (error) {
+    logger.error('Error downloading color STL:', error)
+    next(error)
+  }
+}
+
