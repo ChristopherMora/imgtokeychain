@@ -3,7 +3,7 @@
 # Script para iniciar todos los servicios en background
 # con manejo de errores y logs
 
-PROJECT_DIR="/home/mora/imgtokeychain"
+PROJECT_DIR="/home/mora/imgtokeychai"
 LOG_DIR="$PROJECT_DIR/logs"
 
 # Crear directorio de logs

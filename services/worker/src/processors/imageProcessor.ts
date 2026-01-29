@@ -5,10 +5,12 @@ import { logger } from '../utils/logger'
 import { preprocessImage, extractDominantColors } from './imagePreprocessor'
 import { imageToSvg } from './svgGenerator'
 import { svgToStl } from './stlGenerator'
+import { svgToStlThree } from './stlGeneratorThree'
 import { addRing } from './ringGenerator'
 import { segmentByColorsWithSilhouette } from './colorSegmentation'
 import { generate3MFFromColorSTLs } from './colorGenerator'
 import { removeBackground, extractColorsFromForeground } from './backgroundRemover'
+import { generateCompositeImage } from './compositeGenerator'
 
 const prisma = new PrismaClient()
 
@@ -100,6 +102,10 @@ export const processImageJob = async (data: JobData) => {
       throw new Error('No colors detected in image. Try adjusting the threshold.')
     }
     
+    // Generar imagen compuesta para preview 2D
+    logger.info(`[${jobId}] Generating composite preview image...`)
+    await generateCompositeImage(colorMasks, jobId, STORAGE_PATH)
+    
     await prisma.job.update({
       where: { id: jobId },
       data: { progress: 20 },
@@ -122,14 +128,14 @@ export const processImageJob = async (data: JobData) => {
         data: { progress: Math.round(progressBase + 10) },
       })
       
-      // Generate STL from SVG
+      // Generate STL from SVG using OpenSCAD (probado y confiable)
+      logger.info(`[${jobId}] Generating STL with OpenSCAD for color ${i}`)
       const stlPath = await svgToStl(svgPath, `${jobId}_color${i}`, {
         width: params.width,
         height: params.height,
         thickness: params.thickness,
         borderEnabled: params.borderEnabled,
         borderThickness: params.borderThickness,
-        reliefEnabled: params.reliefEnabled,
       })
       
       colorSTLs.push({ color, stlPath })

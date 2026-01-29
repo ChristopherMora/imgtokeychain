@@ -2,6 +2,7 @@ import sharp from 'sharp'
 import path from 'path'
 import fs from 'fs/promises'
 import { logger } from '../utils/logger'
+import { optimizeMaskForPotrace } from './maskEnhancer'
 
 /**
  * Convierte RGB a HSL
@@ -45,162 +46,107 @@ export const segmentByColorsWithSilhouette = async (
   storagePath: string
 ): Promise<{ color: string; maskPath: string }[]> => {
   try {
-    logger.info(`[${jobId}] Segmenting by HUE ranges within silhouette...`)
+    logger.info(`[${jobId}] Segmenting by guided palette within silhouette...`)
     
     // Leer imagen original
     const { data } = await sharp(inputPath)
       .removeAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true })
+
+    // Si vienen colores dominantes, usarlos como guía principal (mucho más fiel que los picos de hue)
+    const guidedPalette = colors
+      .map(c => hexToRgb(c))
+      .filter((c): c is { r: number; g: number; b: number } => !!c)
     
-    // Analizar los hues presentes en la silueta
-    const hueDistribution: number[] = new Array(360).fill(0)
-    const hueSatSum: number[] = new Array(360).fill(0)
-    const pixelsByHue: Map<number, { r: number; g: number; b: number; count: number }> = new Map()
-    
+    // Siempre agregamos un slot para "oscuro" (texto/runner) aunque no esté en la paleta
+    const masks: { color: string; maskPath: string }[] = []
+    const assignments = new Int16Array(width * height).fill(-1)
+    const COLOR_TOLERANCE = 70 // distancia perceptual para asignar a un color dado
+    const darkIndex = guidedPalette.length // índice reservado para negros
+
+    // Asignar cada pixel dentro de la silueta al color más cercano
     for (let i = 0; i < width * height; i++) {
       if (silhouetteMask[i] !== 255) continue
-      
       const r = data[i * 3]
       const g = data[i * 3 + 1]
       const b = data[i * 3 + 2]
       
-      const { h, s, l } = rgbToHsl(r, g, b)
+      const { s, l } = rgbToHsl(r, g, b)
+      // Capturar texto/runner oscuros (independiente de paleta)
+      if (l < 0.38 && s < 0.32) {
+        assignments[i] = darkIndex
+        continue
+      }
       
-      // Solo considerar píxeles con saturación y luminosidad suficiente
-      if (s > 0.15 && l > 0.1 && l < 0.9) {
-        const hueIndex = Math.floor(h) % 360
-        hueDistribution[hueIndex]++
-        hueSatSum[hueIndex] += s
-        
-        // Guardar color representativo para este hue
-        const existing = pixelsByHue.get(hueIndex)
-        if (!existing || s > (hueSatSum[hueIndex] / hueDistribution[hueIndex])) {
-          pixelsByHue.set(hueIndex, { r, g, b, count: (existing?.count || 0) + 1 })
+      let bestIdx = -1
+      let bestDist = Infinity
+      for (let cIdx = 0; cIdx < guidedPalette.length; cIdx++) {
+        const c = guidedPalette[cIdx]
+        const dist = redmeanDistance(r, g, b, c.r, c.g, c.b)
+        if (dist < bestDist) {
+          bestDist = dist
+          bestIdx = cIdx
         }
       }
-    }
-    
-    // Encontrar picos de hue (rangos de colores dominantes)
-    const huePeaks: { centerHue: number; count: number; color: string }[] = []
-    const HUE_WINDOW = 30 // Agrupar hues en ventanas de 30 grados
-    
-    for (let center = 0; center < 360; center += HUE_WINDOW) {
-      let windowCount = 0
-      let maxSat = 0
-      let bestColor = { r: 0, g: 0, b: 0 }
-      
-      for (let h = center; h < center + HUE_WINDOW && h < 360; h++) {
-        windowCount += hueDistribution[h]
-        const pixel = pixelsByHue.get(h)
-        if (pixel && pixel.count > 0) {
-          const avgSat = hueSatSum[h] / hueDistribution[h]
-          if (avgSat > maxSat) {
-            maxSat = avgSat
-            bestColor = pixel
-          }
-        }
-      }
-      
-      if (windowCount > 100) { // Mínimo de píxeles
-        const hex = `#${bestColor.r.toString(16).padStart(2, '0')}${bestColor.g.toString(16).padStart(2, '0')}${bestColor.b.toString(16).padStart(2, '0')}`
-        huePeaks.push({ centerHue: center, count: windowCount, color: hex })
+      if (bestIdx !== -1 && bestDist < COLOR_TOLERANCE) {
+        assignments[i] = bestIdx
       }
     }
-    
-    // Ordenar por cantidad de píxeles
-    huePeaks.sort((a, b) => b.count - a.count)
-    
-    // Tomar los 2-3 colores principales más diferentes entre sí
-    const selectedPeaks: typeof huePeaks = []
-    for (const peak of huePeaks) {
-      if (selectedPeaks.length >= 3) break
-      
-      const isDifferent = selectedPeaks.every(selected => {
-        const hueDiff = Math.min(
-          Math.abs(peak.centerHue - selected.centerHue),
-          360 - Math.abs(peak.centerHue - selected.centerHue)
-        )
-        return hueDiff > 40 // Al menos 40 grados de diferencia
-      })
-      
-      if (isDifferent || selectedPeaks.length === 0) {
-        selectedPeaks.push(peak)
-      }
-    }
-    
-    logger.info(`[${jobId}] Found ${selectedPeaks.length} hue ranges: ${selectedPeaks.map(p => `${p.color} (hue ${p.centerHue}°)`).join(', ')}`)
-    
-    const masks: { color: string; maskPath: string }[] = []
-    
-    // Crear máscara para cada rango de hue
-    for (let colorIndex = 0; colorIndex < selectedPeaks.length; colorIndex++) {
-      const peak = selectedPeaks[colorIndex]
+
+    // Construir buffers por color guiado
+    const buildMask = async (colorIdx: number, colorHex: string, maskIndex: number, pixels: number[]) => {
       const maskBuffer = Buffer.alloc(width * height)
-      
-      let pixelCount = 0
-      for (let i = 0; i < width * height; i++) {
-        if (silhouetteMask[i] !== 255) {
-          maskBuffer[i] = 0
-          continue
-        }
-        
-        const r = data[i * 3]
-        const g = data[i * 3 + 1]
-        const b = data[i * 3 + 2]
-        
-        const { h, s, l } = rgbToHsl(r, g, b)
-        
-        // Verificar si el hue está en el rango de este color
-        const hueDiff = Math.min(
-          Math.abs(h - peak.centerHue),
-          360 - Math.abs(h - peak.centerHue)
-        )
-        
-        // Incluir si está dentro del rango y tiene suficiente saturación
-        if (hueDiff < HUE_WINDOW && s > 0.1 && l > 0.1 && l < 0.95) {
-          maskBuffer[i] = 255
-          pixelCount++
-        } else {
-          maskBuffer[i] = 0
-        }
-      }
-      
-      const percentage = (pixelCount / (width * height) * 100).toFixed(2)
-      logger.info(`[${jobId}] Hue range ${peak.centerHue}° (${peak.color}): ${pixelCount} pixels (${percentage}%)`)
-      
-      if (pixelCount > 500) {
-        const maskPath = path.join(
-          storagePath,
-          'processed',
-          `${jobId}_color${colorIndex}_mask.pgm`
-        )
-        
-        const TARGET_SIZE = 1000
-        const maskImage = sharp(maskBuffer, {
-          raw: { width, height, channels: 1 }
+      for (const pix of pixels) maskBuffer[pix] = 255
+      const TARGET_SIZE = 2000
+      const maskImage = sharp(maskBuffer, { raw: { width, height, channels: 1 } })
+      const resizedBuffer = await maskImage
+        .greyscale()
+        .resize(TARGET_SIZE, TARGET_SIZE, {
+          fit: 'fill',  // ← CRÍTICO: 'fill' mantiene las posiciones relativas entre capas
+          kernel: 'nearest', // IMPORTANTE: nearest para mantener bordes definidos en máscaras binarias
+          background: { r: 0, g: 0, b: 0, alpha: 1 }
         })
-        
-        const resizedBuffer = await maskImage
-          .greyscale()
-          .resize(TARGET_SIZE, TARGET_SIZE, {
-            fit: 'fill',
-            kernel: 'nearest'
-          })
-          .raw()
-          .toBuffer({ resolveWithObject: true })
-        
-        const pgmHeader = `P5\n${TARGET_SIZE} ${TARGET_SIZE}\n255\n`
-        const pgmData = Buffer.concat([
-          Buffer.from(pgmHeader, 'ascii'),
-          resizedBuffer.data
-        ])
-        
-        await fs.writeFile(maskPath, pgmData)
-        logger.info(`[${jobId}] Mask created for hue ${peak.centerHue}°: ${pixelCount} pixels`)
-        
-        masks.push({ color: peak.color, maskPath })
-      }
+        .threshold(128) // Asegurar que sea puramente binario (blanco/negro)
+        .raw()
+        .toBuffer({ resolveWithObject: true })
+      const pgmHeader = `P5\n${resizedBuffer.info.width} ${resizedBuffer.info.height}\n255\n`
+      const pgmData = Buffer.concat([
+        Buffer.from(pgmHeader, 'ascii'),
+        resizedBuffer.data
+      ])
+      const maskPath = path.join(
+        storagePath,
+        'processed',
+        `${jobId}_color${maskIndex}_mask.pgm`
+      )
+      await fs.writeFile(maskPath, pgmData)
+      masks.push({ color: colorHex, maskPath })
+      logger.info(`[${jobId}] Mask ${maskIndex} (${colorHex}) pixels: ${pixels.length}`)
+    }
+
+    // Agrupar píxeles por asignación
+    const pixelBuckets: number[][] = Array.from({ length: guidedPalette.length + 1 }, () => [])
+    for (let i = 0; i < assignments.length; i++) {
+      const idx = assignments[i]
+      if (idx >= 0) pixelBuckets[idx].push(i)
+    }
+
+    // Construir máscaras de la paleta
+    let written = 0
+    for (let cIdx = 0; cIdx < guidedPalette.length; cIdx++) {
+      const pixels = pixelBuckets[cIdx]
+      if (pixels.length < 50) continue
+      const hex = colors[cIdx] || '#cccccc'
+      await buildMask(cIdx, hex, written, pixels)
+      written++
+    }
+
+    // Máscara oscura (texto/runner)
+    const darkPixels = pixelBuckets[darkIndex]
+    if (darkPixels.length > 50) {
+      await buildMask(darkIndex, '#000000', written, darkPixels)
+      written++
     }
     
     // Si no hay suficientes máscaras, usar la silueta completa como fallback
@@ -383,4 +329,13 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
     g: parseInt(result[2], 16),
     b: parseInt(result[3], 16)
   } : null
+}
+
+// Distancia perceptual (redmean) para comparar colores
+function redmeanDistance(r1: number, g1: number, b1: number, r2: number, g2: number, b2: number): number {
+  const rMean = (r1 + r2) / 2
+  const dR = r1 - r2
+  const dG = g1 - g2
+  const dB = b1 - b2
+  return Math.sqrt(((2 + rMean / 256) * dR * dR) + (4 * dG * dG) + ((2 + (255 - rMean) / 256) * dB * dB))
 }

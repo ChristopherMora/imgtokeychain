@@ -255,18 +255,23 @@ export const extractColorsFromForeground = async (
       })
     }
     
-    // Convertir a array y ordenar por frecuencia
-    const colorArray = Array.from(colorMap.entries())
+    // Separar colores saturados de colores oscuros/grises
+    const saturatedColors = Array.from(colorMap.entries())
       .map(([color, data]) => ({ color, ...data }))
-      .filter(c => c.saturation > 0.1)  // Solo colores con algo de saturación
+      .filter(c => c.saturation > 0.1)  // Colores con saturación
       .sort((a, b) => b.count - a.count)
     
-    logger.info(`[${jobId}] Found ${colorArray.length} unique colors in foreground`)
+    const darkColors = Array.from(colorMap.entries())
+      .map(([color, data]) => ({ color, ...data }))
+      .filter(c => c.saturation <= 0.3)  // Grises, negros (baja saturación)
+      .sort((a, b) => b.count - a.count)
     
-    // Seleccionar colores diversos (diferentes hues)
-    const selectedColors: typeof colorArray = []
-    for (const color of colorArray) {
-      if (selectedColors.length >= 4) break  // Máximo 4 colores
+    logger.info(`[${jobId}] Found ${saturatedColors.length} saturated colors and ${darkColors.length} dark/gray colors in foreground`)
+    
+    // Seleccionar colores diversos (diferentes hues) de los saturados
+    const selectedColors: typeof saturatedColors = []
+    for (const color of saturatedColors) {
+      if (selectedColors.length >= 3) break  // Máximo 3 colores saturados
       
       // Verificar que sea diferente de los ya seleccionados
       const isDifferent = selectedColors.every(selected => {
@@ -280,6 +285,12 @@ export const extractColorsFromForeground = async (
       if (isDifferent || selectedColors.length === 0) {
         selectedColors.push(color)
       }
+    }
+    
+    // Agregar el color oscuro más común si existe y tiene suficientes píxeles
+    if (darkColors.length > 0 && darkColors[0].count > 100) {
+      selectedColors.push(darkColors[0])
+      logger.info(`[${jobId}] Added dark/gray color: ${darkColors[0].color} (${darkColors[0].count} pixels)`)
     }
     
     // Convertir a hex

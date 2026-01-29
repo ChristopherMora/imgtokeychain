@@ -2,6 +2,7 @@ import { Router } from 'express'
 import multer from 'multer'
 import path from 'path'
 import { createJob, getJob, downloadJob, downloadJobColors, download3MF, downloadMulticolorZip, getJobColors, updateJobColors, downloadColorSTL } from '../controllers/jobsController'
+import { getComposite } from '../controllers/compositeController'
 import { validateFile } from '../middleware/validateFile'
 import { rateLimiter } from '../middleware/rateLimiter'
 
@@ -28,6 +29,7 @@ router.post('/', rateLimiter, upload.single('file'), validateFile, createJob)
 router.get('/:id', getJob)
 router.get('/:id/colors', getJobColors)
 router.get('/:id/color/:colorIndex', downloadColorSTL)
+router.get('/:id/composite', getComposite)
 router.put('/:id/colors', updateJobColors)
 router.get('/:id/download', downloadJob)
 router.get('/:id/download-colors', downloadJobColors)

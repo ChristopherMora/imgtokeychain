@@ -11,17 +11,9 @@ export const imageToSvg = async (imagePath: string, jobId: string): Promise<stri
   try {
     const outputPath = path.join(STORAGE_PATH, 'processed', `${jobId}.svg`)
     
-    // Potrace optimizado para bordes más suaves
-    // -s = SVG output
-    // -o = output file  
-    // -i = invert: trazar áreas BLANCAS (porque nuestras máscaras tienen blanco=logo, negro=fondo)
-    // NO usar --tight para mantener el viewBox completo de la máscara (1000x1000)
-    // -t 5 = turdsize (eliminar manchas pequeñas)
-    // -a 1.0 = alphamax (suavizado de esquinas, 1.0 = balance)
-    // -O 0.8 = optimización moderada-alta para suavizar
-    const command = `potrace "${imagePath}" -i -s -o "${outputPath}" -t 5 -a 1.0 -O 0.8`
+    const command = `potrace "${imagePath}" -i -s -o "${outputPath}" -t 2 -a 0.0 -O 0.2 -n`
     
-    logger.info(`Running potrace: ${command}`)
+    logger.info(`Running potrace with HIGH DETAIL settings: ${command}`)
     
     const { stdout, stderr } = await execAsync(command)
     
@@ -29,10 +21,8 @@ export const imageToSvg = async (imagePath: string, jobId: string): Promise<stri
       logger.warn(`Potrace stderr: ${stderr}`)
     }
     
-    logger.info(`SVG generated successfully: ${outputPath}`)
+    logger.info(`SVG generated successfully with high detail: ${outputPath}`)
     
-    // Normalizar el SVG para que tenga viewBox 0 0 100 100
-    // Esto permite que OpenSCAD lo escale correctamente con los parámetros width/height
     await normalizeSVG(outputPath)
     
     return outputPath
@@ -42,25 +32,22 @@ export const imageToSvg = async (imagePath: string, jobId: string): Promise<stri
   }
 }
 
-/**
- * Normaliza el SVG generado por Potrace
- * Remueve el transform interno que Potrace agrega y que interfiere con OpenSCAD
- */
 async function normalizeSVG(svgPath: string): Promise<void> {
   try {
-    const content = await fs.readFile(svgPath, 'utf-8')
+    let content = await fs.readFile(svgPath, 'utf-8')
     
-    // Potrace agrega un <g> con transform que debemos eliminar
-    // Ejemplo: <g transform="translate(0,4500) scale(0.1,-0.1)">
-    // Este transform interfiere con OpenSCAD
-    const normalizedContent = content
-      .replace(/<g transform="[^"]*"/g, '<g')
+    const referenceRect = '<rect x="0" y="0" width="2000" height="2000" fill="none" stroke="none" opacity="0"/>'
     
-    await fs.writeFile(svgPath, normalizedContent)
-    logger.info(`SVG normalized (transform removed): ${svgPath}`)
+    const insertPoint = content.indexOf('>', content.indexOf('<g')) + 1
+    if (insertPoint > 0) {
+      content = content.slice(0, insertPoint) + '\n' + referenceRect + content.slice(insertPoint)
+      await fs.writeFile(svgPath, content, 'utf-8')
+      logger.info(`SVG normalized with reference frame: ${svgPath}`)
+    } else {
+      logger.warn(`Could not find insertion point in SVG: ${svgPath}`)
+    }
     
   } catch (error) {
     logger.error('Error normalizing SVG:', error)
   }
 }
-

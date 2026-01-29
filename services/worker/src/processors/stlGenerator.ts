@@ -30,15 +30,20 @@ export const svgToStl = async (
     logger.info(`[${jobId}] Will create SCAD at: ${scadPath}`)
     logger.info(`[${jobId}] Thickness value: ${params.thickness}`)
 
-    const borderEnabled = params.borderEnabled ?? true
-    const borderThickness = params.borderThickness || 2
+    const borderEnabled = params.borderEnabled ?? false  // Desactivado por defecto para preservar detalles
+    // Offset mínimo para suavizar bordes sin destruir detalles finos
+    // 0.3mm de borde es suficiente para impresión 3D sin perder detalle
+    // En coordenadas del SVG (2000 unidades = width mm): offset = 0.3 * (2000 / width)
+    const borderThickness = (params.borderThickness || 0.3) * (2000 / params.width)
     const reliefEnabled = params.reliefEnabled ?? false
     
     let scadScript: string
     
-    // El SVG mantiene su tamaño original (sin transform interno de Potrace)
-    // Usamos resize() de OpenSCAD para ajustar a las dimensiones solicitadas
-    // resize([width, height, 0], auto=true) mantiene proporciones
+    // El SVG de Potrace tiene viewBox de 2000x2000 (tamaño de la máscara PGM)
+    // Después del transform interno, las coordenadas están en ese rango
+    // Escalamos para obtener el tamaño final en mm
+    const scaleX = params.width / 2000
+    const scaleY = params.height / 2000
 
     if (borderEnabled && reliefEnabled) {
       // Modo con borde Y relieve
@@ -48,47 +53,42 @@ export const svgToStl = async (
       scadScript = `
 // Llavero con borde y relieve ${jobId}
 difference() {
-  // Base con borde redondeado
-  translate([0, 0, ${baseThickness/2}])
-    linear_extrude(height = ${baseThickness}, center = true)
+  // Base con borde redondeado (apoya en Z=0)
+  linear_extrude(height = ${baseThickness}, center = false)
+    scale([${scaleX}, ${scaleY}, 1])
       offset(r = ${borderThickness})
-        offset(delta = ${borderThickness})
-          resize([${params.width}, ${params.height}, 0], auto=true)
-            import("${svgPath}", center = true);
+        import("${svgPath}", center = false);
   
   // Restar logo para hueco
   translate([0, 0, ${baseThickness}])
-    linear_extrude(height = ${reliefHeight} + 1)
-      resize([${params.width}, ${params.height}, 0], auto=true)
-        import("${svgPath}", center = true);
+    linear_extrude(height = ${reliefHeight} + 1, center = false)
+      scale([${scaleX}, ${scaleY}, 1])
+        import("${svgPath}", center = false);
 }
 
 // Logo en relieve
 translate([0, 0, ${baseThickness}])
-  linear_extrude(height = ${reliefHeight})
-    resize([${params.width}, ${params.height}, 0], auto=true)
-      import("${svgPath}", center = true);
+  linear_extrude(height = ${reliefHeight}, center = false)
+    scale([${scaleX}, ${scaleY}, 1])
+      import("${svgPath}", center = false);
 `
     } else if (borderEnabled) {
-      // Solo borde, sin relieve
+      // Solo borde, sin relieve - offset pequeño para suavizar bordes
       scadScript = `
 // Llavero con borde ${jobId}
-linear_extrude(height = ${params.thickness}) {
-  offset(r = ${borderThickness})
-    offset(delta = ${borderThickness})
-      resize([${params.width}, ${params.height}, 0], auto=true)
-        import("${svgPath}", center = true);
+linear_extrude(height = ${params.thickness}, center = false) {
+  scale([${scaleX}, ${scaleY}, 1])
+    offset(r = ${borderThickness})
+      import("${svgPath}", center = false);
 }
 `
     } else {
       // Sin borde ni relieve (modo original)
       scadScript = `
 // Llavero simple ${jobId}
-linear_extrude(height = ${params.thickness}) {
-  resize([${params.width}, ${params.height}, 0], auto=true) {
-    import("${svgPath}", center = true);
-  }
-}
+linear_extrude(height = ${params.thickness}, center = false)
+  scale([${scaleX}, ${scaleY}, 1])
+    import("${svgPath}", center = false);
 `
     }
 

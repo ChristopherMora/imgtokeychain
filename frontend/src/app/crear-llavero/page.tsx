@@ -4,7 +4,7 @@ import { useState } from 'react'
 import ImageUploader from '@/components/ImageUploader'
 import ParameterControls from '@/components/ParameterControls'
 import Preview2D from '@/components/Preview2D'
-import Preview3D from '@/components/Preview3D'
+import Enhanced3DViewer from '@/components/Enhanced3DViewer'
 import JobStatus from '@/components/JobStatus'
 import ColorPicker from '@/components/ColorPicker'
 
@@ -141,15 +141,15 @@ export default function CrearLlaveroPage() {
             {uploadedImage && (
               <div className="bg-white rounded-xl shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4">Preview 2D</h2>
-                <Preview2D imageUrl={uploadedImage} />
+                <Preview2D imageUrl={uploadedImage} jobId={jobId || undefined} />
               </div>
             )}
 
-            {/* Preview 3D */}
+            {/* Enhanced 3D Viewer - MakerWorld Style */}
             {jobId && (
-              <div className="bg-white rounded-xl shadow-lg p-6">
-                <h2 className="text-xl font-bold mb-4">Preview 3D</h2>
-                <Preview3D 
+              <div>
+                <h2 className="text-xl font-bold mb-4 text-gray-900">Preview 3D</h2>
+                <Enhanced3DViewer 
                   jobId={jobId} 
                   status={jobStatus} 
                   dominantColors={dominantColors} 
