@@ -36,7 +36,7 @@ export const createJob = async (req: Request, res: Response, next: NextFunction)
       ringThickness = 2,
       ringPosition = 'top',
       threshold = 180,
-      borderEnabled = true,
+      borderEnabled = false,
       borderThickness = 2,
       reliefEnabled = false,
     } = params
@@ -518,4 +518,3 @@ export const downloadColorSTL = async (req: Request, res: Response, next: NextFu
     next(error)
   }
 }
-

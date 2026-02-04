@@ -29,48 +29,126 @@ export const removeBackground = async (
     
     const image = sharp(inputPath)
     const metadata = await image.metadata()
-    const { width = 500, height = 500, channels = 3 } = metadata
-    
-    // Obtener datos raw de la imagen
-    const { data } = await image
-      .removeAlpha()  // Asegurar 3 canales
+    const { width = 500, height = 500 } = metadata
+    const pixelCount = width * height
+
+    // Obtener datos raw (preservar alpha si existe)
+    const { data, info } = await image
       .raw()
       .toBuffer({ resolveWithObject: true })
+    const channels = info.channels
+
+    // Si el input ya tiene transparencia real, usar el canal alfa como silueta (mucho más preciso)
+    if (channels === 4) {
+      let transparentPixels = 0
+      for (let i = 0; i < pixelCount; i++) {
+        if (data[i * 4 + 3] < 250) transparentPixels++
+      }
+
+      const transparencyRatio = transparentPixels / pixelCount
+      if (transparencyRatio > 0.001) {
+        logger.info(`[${jobId}] Detected alpha transparency (${(transparencyRatio * 100).toFixed(2)}%), using alpha as silhouette`)
+
+        const silhouetteMask = Buffer.alloc(pixelCount)
+        let foregroundPixels = 0
+        for (let i = 0; i < pixelCount; i++) {
+          const a = data[i * 4 + 3]
+          if (a > 0) {
+            silhouetteMask[i] = 255
+            foregroundPixels++
+          } else {
+            silhouetteMask[i] = 0
+          }
+        }
+
+        const silhouetteMaskPath = path.join(storagePath, 'processed', `${jobId}_silhouette.pgm`)
+        const pgmHeader = `P5\n${width} ${height}\n255\n`
+        await fs.writeFile(silhouetteMaskPath, Buffer.concat([Buffer.from(pgmHeader, 'ascii'), silhouetteMask]))
+
+        // Guardar imagen limpia (PNG con alpha)
+        const cleanImagePath = path.join(storagePath, 'processed', `${jobId}_clean.png`)
+        await image.png().toFile(cleanImagePath)
+
+        logger.info(`[${jobId}] Foreground pixels (alpha): ${foregroundPixels} (${(foregroundPixels / pixelCount * 100).toFixed(2)}%)`)
+        logger.info(`[${jobId}] Silhouette mask saved: ${silhouetteMaskPath}`)
+        logger.info(`[${jobId}] Clean image saved: ${cleanImagePath}`)
+
+        return { cleanImagePath, silhouetteMaskPath, width, height }
+      }
+    }
     
     // Detectar el color de fondo analizando las 4 esquinas
-    const backgroundColor = detectBackgroundColor(data, width, height)
+    const backgroundColor = detectBackgroundColor(data, width, height, channels)
     logger.info(`[${jobId}] Detected background color: RGB(${backgroundColor.r}, ${backgroundColor.g}, ${backgroundColor.b})`)
     
-    // Crear máscara de silueta: blanco donde NO es fondo, negro donde ES fondo
-    const silhouetteMask = Buffer.alloc(width * height)
-    let foregroundPixels = 0
-    
-    // Tolerancia para detectar el fondo (ajustable para gradientes)
+    // Flood-fill desde los bordes para detectar SOLO el fondo conectado a las esquinas.
+    // Esto evita eliminar detalles internos que comparten el mismo color del fondo (ej: logo negro sobre fondo negro).
     const BACKGROUND_TOLERANCE = 50
-    
+    const background = new Uint8Array(pixelCount) // 1 = background
+    const queue = new Int32Array(pixelCount)
+    let qh = 0
+    let qt = 0
+
+    const colorDistanceAt = (pixelIndex: number): number => {
+      const dataIndex = pixelIndex * channels
+      const r = data[dataIndex]
+      const g = data[dataIndex + 1]
+      const b = data[dataIndex + 2]
+      return Math.sqrt(
+        Math.pow(r - backgroundColor.r, 2) +
+        Math.pow(g - backgroundColor.g, 2) +
+        Math.pow(b - backgroundColor.b, 2)
+      )
+    }
+
+    const trySeed = (pixelIndex: number) => {
+      if (background[pixelIndex] === 1) return
+      if (colorDistanceAt(pixelIndex) > BACKGROUND_TOLERANCE) return
+      background[pixelIndex] = 1
+      queue[qt++] = pixelIndex
+    }
+
+    // Seeds: todos los píxeles del borde que parezcan fondo
+    for (let x = 0; x < width; x++) {
+      trySeed(x) // top row
+      trySeed((height - 1) * width + x) // bottom row
+    }
     for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const pixelIndex = y * width + x
-        const dataIndex = pixelIndex * 3
-        
-        const r = data[dataIndex]
-        const g = data[dataIndex + 1]
-        const b = data[dataIndex + 2]
-        
-        // Calcular distancia al color de fondo
-        const distance = Math.sqrt(
-          Math.pow(r - backgroundColor.r, 2) +
-          Math.pow(g - backgroundColor.g, 2) +
-          Math.pow(b - backgroundColor.b, 2)
-        )
-        
-        // Si es diferente del fondo → es parte del logo (blanco en la máscara)
-        if (distance > BACKGROUND_TOLERANCE) {
-          silhouetteMask[pixelIndex] = 255  // Blanco = logo
-          foregroundPixels++
-        } else {
-          silhouetteMask[pixelIndex] = 0    // Negro = fondo
-        }
+      trySeed(y * width) // left column
+      trySeed(y * width + (width - 1)) // right column
+    }
+
+    const neighbors = [
+      [-1, 0], [1, 0], [0, -1], [0, 1],
+      [-1, -1], [1, -1], [-1, 1], [1, 1],
+    ] as const
+
+    while (qh < qt) {
+      const idx = queue[qh++]
+      const x = idx % width
+      const y = Math.floor(idx / width)
+
+      for (const [dx, dy] of neighbors) {
+        const nx = x + dx
+        const ny = y + dy
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+        const nidx = ny * width + nx
+        if (background[nidx] === 1) continue
+        if (colorDistanceAt(nidx) > BACKGROUND_TOLERANCE) continue
+        background[nidx] = 1
+        queue[qt++] = nidx
+      }
+    }
+
+    // Crear máscara de silueta: blanco donde NO es fondo (conectado al borde), negro donde ES fondo
+    const silhouetteMask = Buffer.alloc(pixelCount)
+    let foregroundPixels = 0
+    for (let i = 0; i < pixelCount; i++) {
+      if (background[i] === 1) {
+        silhouetteMask[i] = 0
+      } else {
+        silhouetteMask[i] = 255
+        foregroundPixels++
       }
     }
     
@@ -96,9 +174,10 @@ export const removeBackground = async (
     // Crear imagen RGBA
     const rgbaData = Buffer.alloc(width * height * 4)
     for (let i = 0; i < width * height; i++) {
-      rgbaData[i * 4] = data[i * 3]         // R
-      rgbaData[i * 4 + 1] = data[i * 3 + 1] // G
-      rgbaData[i * 4 + 2] = data[i * 3 + 2] // B
+      const dataIndex = i * channels
+      rgbaData[i * 4] = data[dataIndex]         // R
+      rgbaData[i * 4 + 1] = data[dataIndex + 1] // G
+      rgbaData[i * 4 + 2] = data[dataIndex + 2] // B
       rgbaData[i * 4 + 3] = silhouetteMask[i] // A (de la máscara)
     }
     
@@ -134,7 +213,8 @@ export const removeBackground = async (
 function detectBackgroundColor(
   data: Buffer,
   width: number,
-  height: number
+  height: number,
+  channels: number
 ): { r: number; g: number; b: number } {
   // Muestrear píxeles de las 4 esquinas (área de 20x20)
   const sampleSize = 20
@@ -143,7 +223,7 @@ function detectBackgroundColor(
   // Esquina superior izquierda
   for (let y = 0; y < sampleSize && y < height; y++) {
     for (let x = 0; x < sampleSize && x < width; x++) {
-      const idx = (y * width + x) * 3
+      const idx = (y * width + x) * channels
       samples.push({ r: data[idx], g: data[idx + 1], b: data[idx + 2] })
     }
   }
@@ -152,7 +232,7 @@ function detectBackgroundColor(
   for (let y = 0; y < sampleSize && y < height; y++) {
     for (let x = width - sampleSize; x < width; x++) {
       if (x >= 0) {
-        const idx = (y * width + x) * 3
+        const idx = (y * width + x) * channels
         samples.push({ r: data[idx], g: data[idx + 1], b: data[idx + 2] })
       }
     }
@@ -162,7 +242,7 @@ function detectBackgroundColor(
   for (let y = height - sampleSize; y < height; y++) {
     if (y >= 0) {
       for (let x = 0; x < sampleSize && x < width; x++) {
-        const idx = (y * width + x) * 3
+        const idx = (y * width + x) * channels
         samples.push({ r: data[idx], g: data[idx + 1], b: data[idx + 2] })
       }
     }
@@ -173,7 +253,7 @@ function detectBackgroundColor(
     if (y >= 0) {
       for (let x = width - sampleSize; x < width; x++) {
         if (x >= 0) {
-          const idx = (y * width + x) * 3
+          const idx = (y * width + x) * channels
           samples.push({ r: data[idx], g: data[idx + 1], b: data[idx + 2] })
         }
       }
@@ -214,11 +294,13 @@ export const extractColorsFromForeground = async (
       .toBuffer({ resolveWithObject: true })
     
     // Contar colores solo en píxeles del logo (donde silhouetteMask = 255)
-    const colorMap = new Map<string, { count: number; saturation: number; hue: number }>()
+    const colorMap = new Map<string, { count: number; saturation: number; hue: number; lightness: number }>()
+    let foregroundPixels = 0
     
     for (let i = 0; i < width * height; i++) {
       // Solo procesar píxeles del logo
       if (silhouetteMask[i] !== 255) continue
+      foregroundPixels++
       
       const r = data[i * 3]
       const g = data[i * 3 + 1]
@@ -233,6 +315,7 @@ export const extractColorsFromForeground = async (
       const max = Math.max(rr, gg, bb)
       const min = Math.min(rr, gg, bb)
       const saturation = max === 0 ? 0 : (max - min) / max
+      const lightness = (max + min) / 2 / 255
       
       let hue = 0
       if (max !== min) {
@@ -247,11 +330,12 @@ export const extractColorsFromForeground = async (
       }
       
       const colorKey = `${rr},${gg},${bb}`
-      const existing = colorMap.get(colorKey) || { count: 0, saturation, hue }
+      const existing = colorMap.get(colorKey) || { count: 0, saturation, hue, lightness }
       colorMap.set(colorKey, {
         count: existing.count + 1,
-        saturation,
-        hue,
+        saturation: existing.saturation,
+        hue: existing.hue,
+        lightness: existing.lightness,
       })
     }
     
@@ -270,7 +354,24 @@ export const extractColorsFromForeground = async (
     
     // Seleccionar colores diversos (diferentes hues) de los saturados
     const selectedColors: typeof saturatedColors = []
-    for (const color of saturatedColors) {
+
+    // Filtrar colores "accidentales" (anti-aliasing / compresión) que generan capas punteadas.
+    // Regla: ignorar colores saturados MUY oscuros si no ocupan una fracción significativa del foreground.
+    const MIN_SATURATED_FRACTION = 0.02 // 2% del foreground
+    const MIN_DARK_SATURATED_FRACTION = 0.08 // 8% si además es muy oscuro
+    const VERY_DARK_LIGHTNESS = 0.12
+
+    const saturatedCandidates = saturatedColors.filter(c => {
+      if (foregroundPixels <= 0) return false
+      if (c.count < foregroundPixels * MIN_SATURATED_FRACTION) return false
+      const isVeryDark = c.lightness < VERY_DARK_LIGHTNESS
+      if (isVeryDark && c.count < foregroundPixels * MIN_DARK_SATURATED_FRACTION) return false
+      return true
+    })
+
+    const saturatedPool = saturatedCandidates.length > 0 ? saturatedCandidates : saturatedColors
+
+    for (const color of saturatedPool) {
       if (selectedColors.length >= 3) break  // Máximo 3 colores saturados
       
       // Verificar que sea diferente de los ya seleccionados

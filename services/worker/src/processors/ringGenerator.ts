@@ -13,6 +13,156 @@ interface RingParams {
   position: string
 }
 
+type StlFormat = 'ascii' | 'binary'
+
+type BoundingBox = {
+  minX: number
+  minY: number
+  minZ: number
+  maxX: number
+  maxY: number
+  maxZ: number
+}
+
+function detectStlFormat(buffer: Buffer): StlFormat {
+  // Binary STLs can also start with "solid" in the header, so use a stronger heuristic:
+  // If we can find ASCII keywords early, treat it as ASCII.
+  const head = buffer.slice(0, Math.min(buffer.length, 1024)).toString('ascii')
+  if (/^solid\b/i.test(head) && /facet\s+normal/i.test(head) && /vertex\s+/i.test(head)) return 'ascii'
+  return 'binary'
+}
+
+function formatNumber(n: number): string {
+  if (!Number.isFinite(n)) return '0'
+  // Trim noise but keep enough precision for printing
+  const s = n.toFixed(6)
+  return s.replace(/\.?0+$/, '')
+}
+
+function computeBoundingBoxFromAscii(stlText: string): BoundingBox | null {
+  const vertexPattern = /vertex\s+([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)/g
+
+  let minX = Infinity
+  let minY = Infinity
+  let minZ = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  let maxZ = -Infinity
+
+  let match: RegExpExecArray | null
+  let vertices = 0
+  while ((match = vertexPattern.exec(stlText)) !== null) {
+    const x = Number(match[1])
+    const y = Number(match[2])
+    const z = Number(match[3])
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue
+    vertices++
+    if (x < minX) minX = x
+    if (y < minY) minY = y
+    if (z < minZ) minZ = z
+    if (x > maxX) maxX = x
+    if (y > maxY) maxY = y
+    if (z > maxZ) maxZ = z
+  }
+
+  if (vertices === 0) return null
+  return { minX, minY, minZ, maxX, maxY, maxZ }
+}
+
+function computeBoundingBoxFromBinary(buffer: Buffer): BoundingBox | null {
+  if (buffer.length < 84) return null
+  const triangleCount = buffer.readUInt32LE(80)
+  const triangleDataOffset = 84
+  const triangleStride = 50
+  const expectedSize = triangleDataOffset + triangleCount * triangleStride
+  if (buffer.length < expectedSize) return null
+
+  let minX = Infinity
+  let minY = Infinity
+  let minZ = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  let maxZ = -Infinity
+
+  for (let i = 0; i < triangleCount; i++) {
+    const base = triangleDataOffset + i * triangleStride + 12 // skip normal
+    for (let v = 0; v < 3; v++) {
+      const x = buffer.readFloatLE(base + v * 12)
+      const y = buffer.readFloatLE(base + v * 12 + 4)
+      const z = buffer.readFloatLE(base + v * 12 + 8)
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue
+      if (x < minX) minX = x
+      if (y < minY) minY = y
+      if (z < minZ) minZ = z
+      if (x > maxX) maxX = x
+      if (y > maxY) maxY = y
+      if (z > maxZ) maxZ = z
+    }
+  }
+
+  if (!Number.isFinite(minX)) return null
+  return { minX, minY, minZ, maxX, maxY, maxZ }
+}
+
+async function getStlBoundingBox(stlPath: string): Promise<BoundingBox | null> {
+  const buffer = await fs.readFile(stlPath)
+  const format = detectStlFormat(buffer)
+  if (format === 'ascii') return computeBoundingBoxFromAscii(buffer.toString('utf8'))
+  return computeBoundingBoxFromBinary(buffer)
+}
+
+function extractAsciiFacets(stlText: string): string {
+  const facetPattern = /facet\s+normal[\s\S]*?endfacet\s*/gi
+  const facets = stlText.match(facetPattern)
+  if (!facets || facets.length === 0) return ''
+  return facets.join('\n')
+}
+
+function binaryToAsciiFacets(buffer: Buffer): string {
+  if (buffer.length < 84) return ''
+  const triangleCount = buffer.readUInt32LE(80)
+  const triangleDataOffset = 84
+  const triangleStride = 50
+  const expectedSize = triangleDataOffset + triangleCount * triangleStride
+  if (buffer.length < expectedSize) return ''
+
+  const blocks: string[] = []
+  for (let i = 0; i < triangleCount; i++) {
+    const base = triangleDataOffset + i * triangleStride
+    const nx = buffer.readFloatLE(base)
+    const ny = buffer.readFloatLE(base + 4)
+    const nz = buffer.readFloatLE(base + 8)
+
+    const v0x = buffer.readFloatLE(base + 12)
+    const v0y = buffer.readFloatLE(base + 16)
+    const v0z = buffer.readFloatLE(base + 20)
+    const v1x = buffer.readFloatLE(base + 24)
+    const v1y = buffer.readFloatLE(base + 28)
+    const v1z = buffer.readFloatLE(base + 32)
+    const v2x = buffer.readFloatLE(base + 36)
+    const v2y = buffer.readFloatLE(base + 40)
+    const v2z = buffer.readFloatLE(base + 44)
+
+    blocks.push(
+      `  facet normal ${formatNumber(nx)} ${formatNumber(ny)} ${formatNumber(nz)}\n` +
+        `    outer loop\n` +
+        `      vertex ${formatNumber(v0x)} ${formatNumber(v0y)} ${formatNumber(v0z)}\n` +
+        `      vertex ${formatNumber(v1x)} ${formatNumber(v1y)} ${formatNumber(v1z)}\n` +
+        `      vertex ${formatNumber(v2x)} ${formatNumber(v2y)} ${formatNumber(v2z)}\n` +
+        `    endloop\n` +
+        `  endfacet`
+    )
+  }
+
+  return blocks.join('\n')
+}
+
+function stlBufferToAsciiFacets(buffer: Buffer): string {
+  const format = detectStlFormat(buffer)
+  if (format === 'ascii') return extractAsciiFacets(buffer.toString('utf8'))
+  return binaryToAsciiFacets(buffer)
+}
+
 export const addRing = async (
   stlPath: string,
   jobId: string,
@@ -20,126 +170,101 @@ export const addRing = async (
 ): Promise<string> => {
   try {
     const outputPath = path.join(STORAGE_PATH, 'processed', `${jobId}_with_ring.stl`)
-    const scadPath = path.join(STORAGE_PATH, 'temp', `${jobId}_ring.scad`)
+    const ringOnlyPath = path.join(STORAGE_PATH, 'processed', `${jobId}_ring_only.stl`)
+    const ringScadPath = path.join(STORAGE_PATH, 'temp', `${jobId}_ring_only.scad`)
 
-    // Calculate ring position offset
-    let translateX = 0
-    let translateY = 0
-    
-    switch (params.position) {
-      case 'top':
-        translateY = 30 // Adjust based on model size
-        break
-      case 'left':
-        translateX = -30
-        break
-      case 'right':
-        translateX = 30
-        break
+    // Compute model bounds to place ring reliably (avoids fixed offsets)
+    const bbox = await getStlBoundingBox(stlPath)
+    const minX = bbox?.minX ?? 0
+    const maxX = bbox?.maxX ?? 50
+    const minY = bbox?.minY ?? 0
+    const maxY = bbox?.maxY ?? 50
+    const minZ = bbox?.minZ ?? 0
+    const maxZ = bbox?.maxZ ?? 3
+
+    const ringOuterRadius = params.diameter / 2 + params.thickness
+    const OVERLAP_RATIO = 0.35 // 35% of ring radius overlaps the model for a solid connection
+
+    let translateX = (minX + maxX) / 2
+    let translateY = maxY + ringOuterRadius * (1 - OVERLAP_RATIO)
+
+    if (params.position === 'left') {
+      translateX = minX - ringOuterRadius * (1 - OVERLAP_RATIO)
+      translateY = (minY + maxY) / 2
+    } else if (params.position === 'right') {
+      translateX = maxX + ringOuterRadius * (1 - OVERLAP_RATIO)
+      translateY = (minY + maxY) / 2
     }
 
-    // Create OpenSCAD script with ring - using union() and render() for CGAL stability
-    const scadScript = `
-// Add ring to keychain ${jobId}
-$fn = 50;
+    // Ensure the ring doesn't go below the build plane (z < 0)
+    const translateZ = Math.max((minZ + maxZ) / 2, ringOuterRadius)
 
-module keyring(inner_diameter, thickness) {
-  render() {
-    difference() {
-      cylinder(h = thickness, d = inner_diameter + (thickness * 2), center = true);
-      cylinder(h = thickness + 1, d = inner_diameter, center = true);
-    }
+    // Generate the ring separately (CGAL union of two complex solids is brittle in OpenSCAD 2019).
+    // We'll merge both meshes into one STL by concatenating facets.
+    const ringScad = `
+// Ring only (merged later) ${jobId}
+$fn = 64;
+
+module keyring(inner_diameter, wall, height) {
+  difference() {
+    cylinder(h = height, d = inner_diameter + (wall * 2), center = true);
+    cylinder(h = height + 0.5, d = inner_diameter, center = true);
   }
 }
 
-// Union original STL with ring
-union() {
-  // Import original STL with render() for CGAL stability
-  render(convexity = 10) {
-    import("${stlPath}");
-  }
-
-  // Add ring as separate object
-  translate([${translateX}, ${translateY}, 0]) {
-    rotate([90, 0, 0]) {
-      keyring(${params.diameter}, ${params.thickness});
-    }
+translate([${formatNumber(translateX)}, ${formatNumber(translateY)}, ${formatNumber(translateZ)}]) {
+  rotate([90, 0, 0]) {
+    keyring(${formatNumber(params.diameter)}, ${formatNumber(params.thickness)}, ${formatNumber(params.thickness)});
   }
 }
 `
 
-    await fs.writeFile(scadPath, scadScript)
-    logger.info(`Ring OpenSCAD script created: ${scadPath}`)
+    await fs.writeFile(ringScadPath, ringScad)
+    logger.info(`Ring OpenSCAD script created: ${ringScadPath}`)
 
-    // Run OpenSCAD (defaults to binary format in this version)
-    const command = `openscad -o "${outputPath}" "${scadPath}"`
-    
-    logger.info(`Running OpenSCAD with ring: ${command}`)
-    
+    const ringCommand = `openscad -o "${ringOnlyPath}" "${ringScadPath}"`
+    logger.info(`Running OpenSCAD (ring only): ${ringCommand}`)
+
     try {
-      const { stdout, stderr } = await execAsync(command, {
+      const { stderr } = await execAsync(ringCommand, {
         timeout: parseInt(process.env.WORKER_MAX_JOB_TIME || '60000'),
       })
-
-      if (stderr && !stderr.includes('WARNING')) {
-        logger.warn(`OpenSCAD stderr: ${stderr}`)
-      }
-    } catch (openscadError: any) {
-      logger.warn(`OpenSCAD ring union failed: ${openscadError.message}`)
-      
-      // Try simpler approach: just generate the ring separately and keep original
-      const simpleScad = `
-// Simple ring only for keychain ${jobId}
-$fn = 50;
-cylinder(h = ${params.thickness}, d = ${params.diameter} + (${params.thickness} * 2), center = true);
-difference() {
-  cylinder(h = ${params.thickness}, d = ${params.diameter} + (${params.thickness} * 2), center = true);
-  cylinder(h = ${params.thickness} + 1, d = ${params.diameter}, center = true);
-}
-`
-      const ringOnlyPath = path.join(STORAGE_PATH, 'processed', `${jobId}_ring_only.stl`)
-      const ringScadPath = path.join(STORAGE_PATH, 'temp', `${jobId}_ring_only.scad`)
-      
-      await fs.writeFile(ringScadPath, simpleScad)
-      
-      try {
-        await execAsync(`openscad -o "${ringOnlyPath}" "${ringScadPath}"`, { timeout: 30000 })
-        logger.info(`Ring generated separately: ${ringOnlyPath}`)
-        await fs.unlink(ringScadPath).catch(() => {})
-      } catch {
-        logger.warn('Could not generate ring separately either')
-      }
-      
-      // Copy original STL as the output (without ring)
-      logger.warn('Using original STL without ring due to CGAL error')
+      if (stderr) logger.warn(`OpenSCAD ring stderr: ${stderr}`)
+    } catch (error: any) {
+      logger.warn(`OpenSCAD ring generation failed: ${error?.message || error}`)
+      // Fallback: keep original STL (do not fail the job)
       await fs.copyFile(stlPath, outputPath)
-      await fs.unlink(scadPath).catch(() => {})
+      await fs.unlink(ringScadPath).catch(() => {})
+      return outputPath
+    } finally {
+      await fs.unlink(ringScadPath).catch(() => {})
+    }
+
+    // Merge original + ring STL into a single ASCII STL (slicer will naturally union overlapping volumes)
+    const originalBuffer = await fs.readFile(stlPath)
+    const ringBuffer = await fs.readFile(ringOnlyPath)
+
+    const originalFacets = stlBufferToAsciiFacets(originalBuffer)
+    const ringFacets = stlBufferToAsciiFacets(ringBuffer)
+
+    if (!originalFacets || !ringFacets) {
+      logger.warn(`[${jobId}] Could not extract facets for STL merge, keeping original STL`)
+      await fs.copyFile(stlPath, outputPath)
       return outputPath
     }
 
-    // Verify output
-    try {
-      await fs.access(outputPath)
-      const stats = await fs.stat(outputPath)
-      const originalStats = await fs.stat(stlPath)
-      
-      // If the output file is smaller than the original, union failed
-      if (stats.size < originalStats.size * 0.5) {
-        logger.warn(`Ring generation failed - output too small (${stats.size} bytes vs ${originalStats.size} bytes original)`)
-        throw new Error('CGAL union failed - keeping original STL')
-      }
-      
-      logger.info(`STL with ring generated: ${outputPath}`)
-    } catch {
-      throw new Error('STL with ring was not created')
-    }
+    const solidName = `${jobId}_with_ring`
+    const merged = `solid ${solidName}\n${originalFacets}\n${ringFacets}\nendsolid ${solidName}\n`
+    await fs.writeFile(outputPath, merged, 'utf8')
 
-    // Cleanup
-    await fs.unlink(scadPath).catch(() => {})
+    logger.info(`STL with ring generated (merged facets): ${outputPath}`)
 
     return outputPath
   } catch (error) {
     logger.error('Error adding ring:', error)
-    throw new Error(`Failed to add ring: ${error}`)
+    // Never fail the whole job because of the ring: return original STL.
+    const fallbackPath = path.join(STORAGE_PATH, 'processed', `${jobId}_with_ring.stl`)
+    await fs.copyFile(stlPath, fallbackPath).catch(() => {})
+    return fallbackPath
   }
 }

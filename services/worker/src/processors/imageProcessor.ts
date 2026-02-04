@@ -97,6 +97,14 @@ export const processImageJob = async (data: JobData) => {
       STORAGE_PATH
     )
     logger.info(`[${jobId}] Created ${colorMasks.length} color masks`)
+
+    // Importante: la segmentación puede agregar/quitar capas (ej: negro para texto/runner),
+    // así que persistimos el set final de colores para que API/Frontend descarguen la misma cantidad de STLs.
+    const finalColors = colorMasks.map(m => m.color)
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { dominantColors: finalColors },
+    })
     
     if (colorMasks.length === 0) {
       throw new Error('No colors detected in image. Try adjusting the threshold.')
@@ -113,6 +121,7 @@ export const processImageJob = async (data: JobData) => {
     
     // Arrays to hold STLs per color
     const colorSTLs: { color: string; stlPath: string }[] = []
+    const isMulticolor = colorMasks.length > 1
     
     // Step 3: Process each color mask separately
     for (let i = 0; i < colorMasks.length; i++) {
@@ -134,8 +143,11 @@ export const processImageJob = async (data: JobData) => {
         width: params.width,
         height: params.height,
         thickness: params.thickness,
-        borderEnabled: params.borderEnabled,
-        borderThickness: params.borderThickness,
+        // Importante: NO aplicar borde/offset por capa en multicolor.
+        // Eso infla cada región de color y termina "embarrando" el logo (se fusionan y se pierden detalles).
+        borderEnabled: isMulticolor ? false : params.borderEnabled,
+        borderThickness: isMulticolor ? undefined : params.borderThickness,
+        reliefEnabled: isMulticolor ? false : params.reliefEnabled,
       })
       
       colorSTLs.push({ color, stlPath })
@@ -147,32 +159,31 @@ export const processImageJob = async (data: JobData) => {
       })
     }
     
-    // Step 4: Generate 3MF with all colored objects
+    // Step 4: Add ring if enabled (to first object only for now)
+    let finalStlPath = colorSTLs[0].stlPath
+    if (params.ringEnabled) {
+      logger.info(`[${jobId}] Adding ring...`)
+      finalStlPath = await addRing(finalStlPath, jobId, {
+        diameter: params.ringDiameter,
+        thickness: params.ringThickness,
+        position: params.ringPosition,
+      })
+
+      // Asegurar que 3MF/ZIP usen el STL con aro
+      colorSTLs[0].stlPath = finalStlPath
+    }
+
+    // Step 5: Generate 3MF with all colored objects (incluye aro si aplica)
     logger.info(`[${jobId}] Creating multi-color 3MF...`)
     const mfPath = await generate3MFFromColorSTLs(colorSTLs, jobId, STORAGE_PATH)
     
     await prisma.job.update({
       where: { id: jobId },
       data: { 
-        stlPath: colorSTLs[0].stlPath, // First STL for preview
+        stlPath: finalStlPath, // STL base para preview/descarga
         progress: 70 
       },
     })
-    
-    // Step 5: Add ring if enabled (to first object only for now)
-    let finalStlPath = colorSTLs[0].stlPath
-    if (params.ringEnabled) {
-      logger.info(`[${jobId}] Adding ring...`)
-      finalStlPath = await addRing(colorSTLs[0].stlPath, jobId, {
-        diameter: params.ringDiameter,
-        thickness: params.ringThickness,
-        position: params.ringPosition,
-      })
-      await prisma.job.update({
-        where: { id: jobId },
-        data: { stlPath: finalStlPath },
-      })
-    }
     
     // Step 6: Create ZIP with all color STLs for manual use
     logger.info(`[${jobId}] Creating ZIP with individual STLs...`)

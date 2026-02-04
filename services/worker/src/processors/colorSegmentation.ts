@@ -59,11 +59,17 @@ export const segmentByColorsWithSilhouette = async (
       .map(c => hexToRgb(c))
       .filter((c): c is { r: number; g: number; b: number } => !!c)
     
-    // Siempre agregamos un slot para "oscuro" (texto/runner) aunque no esté en la paleta
     const masks: { color: string; maskPath: string }[] = []
     const assignments = new Int16Array(width * height).fill(-1)
-    const COLOR_TOLERANCE = 70 // distancia perceptual para asignar a un color dado
-    const darkIndex = guidedPalette.length // índice reservado para negros
+
+    // Slot "oscuro" (texto/runner): si la paleta ya incluye un negro/gris muy oscuro, reutilizarlo.
+    // Esto evita crear una capa extra que no está en `dominantColors` (y rompe el preview/descarga por índice).
+    const existingDarkIndex = guidedPalette.findIndex(c => {
+      const { s, l } = rgbToHsl(c.r, c.g, c.b)
+      return l < 0.2 && s < 0.25
+    })
+    const usesExtraDarkSlot = existingDarkIndex === -1
+    const darkIndex = usesExtraDarkSlot ? guidedPalette.length : existingDarkIndex
 
     // Asignar cada pixel dentro de la silueta al color más cercano
     for (let i = 0; i < width * height; i++) {
@@ -73,7 +79,7 @@ export const segmentByColorsWithSilhouette = async (
       const b = data[i * 3 + 2]
       
       const { s, l } = rgbToHsl(r, g, b)
-      // Capturar texto/runner oscuros (independiente de paleta)
+      // Capturar texto/runner oscuros
       if (l < 0.38 && s < 0.32) {
         assignments[i] = darkIndex
         continue
@@ -89,9 +95,10 @@ export const segmentByColorsWithSilhouette = async (
           bestIdx = cIdx
         }
       }
-      if (bestIdx !== -1 && bestDist < COLOR_TOLERANCE) {
-        assignments[i] = bestIdx
-      }
+      // Importante: asignar SIEMPRE el pixel al color más cercano.
+      // Un cutoff duro (tolerancia) deja huecos (píxeles sin asignación) y se ven como líneas punteadas
+      // en texto/bordes finos tras la vectorización.
+      if (bestIdx !== -1) assignments[i] = bestIdx
     }
 
     // Construir buffers por color guiado
@@ -126,7 +133,8 @@ export const segmentByColorsWithSilhouette = async (
     }
 
     // Agrupar píxeles por asignación
-    const pixelBuckets: number[][] = Array.from({ length: guidedPalette.length + 1 }, () => [])
+    const bucketCount = guidedPalette.length + (usesExtraDarkSlot ? 1 : 0)
+    const pixelBuckets: number[][] = Array.from({ length: bucketCount }, () => [])
     for (let i = 0; i < assignments.length; i++) {
       const idx = assignments[i]
       if (idx >= 0) pixelBuckets[idx].push(i)
@@ -142,11 +150,13 @@ export const segmentByColorsWithSilhouette = async (
       written++
     }
 
-    // Máscara oscura (texto/runner)
-    const darkPixels = pixelBuckets[darkIndex]
-    if (darkPixels.length > 50) {
-      await buildMask(darkIndex, '#000000', written, darkPixels)
-      written++
+    // Máscara oscura (texto/runner) SOLO si agregamos slot extra
+    if (usesExtraDarkSlot) {
+      const darkPixels = pixelBuckets[darkIndex]
+      if (darkPixels.length > 50) {
+        await buildMask(darkIndex, '#000000', written, darkPixels)
+        written++
+      }
     }
     
     // Si no hay suficientes máscaras, usar la silueta completa como fallback

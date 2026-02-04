@@ -16,6 +16,21 @@ interface StlParams {
   reliefEnabled?: boolean
 }
 
+async function getSvgViewBoxSize(svgPath: string): Promise<{ width: number; height: number } | null> {
+  try {
+    const content = await fs.readFile(svgPath, 'utf-8')
+    const svgTagMatch = content.match(/<svg\b[^>]*>/i)
+    if (!svgTagMatch) return null
+    const viewBoxMatch = svgTagMatch[0].match(/\bviewBox\s*=\s*(['"])([^'"]+)\1/i)
+    if (!viewBoxMatch) return null
+    const parts = viewBoxMatch[2].trim().split(/[\s,]+/).map(Number)
+    if (parts.length < 4 || parts.some(n => Number.isNaN(n))) return null
+    return { width: parts[2], height: parts[3] }
+  } catch {
+    return null
+  }
+}
+
 export const svgToStl = async (
   svgPath: string,
   jobId: string,
@@ -31,19 +46,19 @@ export const svgToStl = async (
     logger.info(`[${jobId}] Thickness value: ${params.thickness}`)
 
     const borderEnabled = params.borderEnabled ?? false  // Desactivado por defecto para preservar detalles
-    // Offset mínimo para suavizar bordes sin destruir detalles finos
-    // 0.3mm de borde es suficiente para impresión 3D sin perder detalle
-    // En coordenadas del SVG (2000 unidades = width mm): offset = 0.3 * (2000 / width)
-    const borderThickness = (params.borderThickness || 0.3) * (2000 / params.width)
+    const borderThicknessMm = Math.max(0, params.borderThickness ?? 0.3)
     const reliefEnabled = params.reliefEnabled ?? false
     
     let scadScript: string
     
-    // El SVG de Potrace tiene viewBox de 2000x2000 (tamaño de la máscara PGM)
-    // Después del transform interno, las coordenadas están en ese rango
+    // Determinar el size real del SVG usando viewBox (evita asumir 2000x2000)
+    const viewBoxSize = await getSvgViewBoxSize(svgPath)
+    const vbWidth = viewBoxSize?.width ?? 2000
+    const vbHeight = viewBoxSize?.height ?? 2000
+
     // Escalamos para obtener el tamaño final en mm
-    const scaleX = params.width / 2000
-    const scaleY = params.height / 2000
+    const scaleX = params.width / vbWidth
+    const scaleY = params.height / vbHeight
 
     if (borderEnabled && reliefEnabled) {
       // Modo con borde Y relieve
@@ -52,35 +67,28 @@ export const svgToStl = async (
       
       scadScript = `
 // Llavero con borde y relieve ${jobId}
-difference() {
+union() {
   // Base con borde redondeado (apoya en Z=0)
   linear_extrude(height = ${baseThickness}, center = false)
-    scale([${scaleX}, ${scaleY}, 1])
-      offset(r = ${borderThickness})
+    offset(r = ${borderThicknessMm})
+      scale([${scaleX}, ${scaleY}, 1])
         import("${svgPath}", center = false);
-  
-  // Restar logo para hueco
+
+  // Logo en relieve
   translate([0, 0, ${baseThickness}])
-    linear_extrude(height = ${reliefHeight} + 1, center = false)
+    linear_extrude(height = ${reliefHeight}, center = false)
       scale([${scaleX}, ${scaleY}, 1])
         import("${svgPath}", center = false);
 }
-
-// Logo en relieve
-translate([0, 0, ${baseThickness}])
-  linear_extrude(height = ${reliefHeight}, center = false)
-    scale([${scaleX}, ${scaleY}, 1])
-      import("${svgPath}", center = false);
 `
     } else if (borderEnabled) {
       // Solo borde, sin relieve - offset pequeño para suavizar bordes
       scadScript = `
 // Llavero con borde ${jobId}
-linear_extrude(height = ${params.thickness}, center = false) {
-  scale([${scaleX}, ${scaleY}, 1])
-    offset(r = ${borderThickness})
+linear_extrude(height = ${params.thickness}, center = false)
+  offset(r = ${borderThicknessMm})
+    scale([${scaleX}, ${scaleY}, 1])
       import("${svgPath}", center = false);
-}
 `
     } else {
       // Sin borde ni relieve (modo original)

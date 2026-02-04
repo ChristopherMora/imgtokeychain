@@ -25,7 +25,7 @@ export default function CrearLlaveroPage() {
     ringThickness: 2,
     ringPosition: 'top' as 'top' | 'left' | 'right',
     threshold: 180,
-    borderEnabled: true,
+    borderEnabled: false,
     borderThickness: 2,
     reliefEnabled: false,
   })

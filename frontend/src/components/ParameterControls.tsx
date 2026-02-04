@@ -110,7 +110,7 @@ export default function ParameterControls({ parameters, onChange, onGenerate, is
           <label className="relative inline-flex items-center cursor-pointer">
             <input
               type="checkbox"
-              checked={parameters.borderEnabled ?? true}
+              checked={parameters.borderEnabled ?? false}
               onChange={(e) => updateParam('borderEnabled', e.target.checked)}
               className="sr-only peer"
             />
@@ -118,7 +118,7 @@ export default function ParameterControls({ parameters, onChange, onGenerate, is
           </label>
         </div>
 
-        {(parameters.borderEnabled ?? true) && (
+        {(parameters.borderEnabled ?? false) && (
           <div className="pl-4 border-l-2 border-primary-200">
             <label className="flex justify-between text-sm mb-1">
               <span>Grosor del borde</span>
@@ -134,7 +134,7 @@ export default function ParameterControls({ parameters, onChange, onGenerate, is
               className="w-full"
             />
             <p className="text-xs text-gray-500 mt-1">
-              Borde alrededor del logo para darle forma de llavero
+              Borde alrededor del logo para darle forma de llavero. En modo multicolor se desactiva automáticamente para preservar detalles.
             </p>
           </div>
         )}

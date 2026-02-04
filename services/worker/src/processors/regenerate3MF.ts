@@ -1,5 +1,5 @@
 import path from 'path'
-import fs from 'fs/promises'
+import fs from 'fs'
 import { logger } from '../utils/logger'
 import { PrismaClient } from '@prisma/client'
 import { generate3MFFromColorSTLs } from './colorGenerator'
@@ -22,15 +22,13 @@ export const regenerate3MFJob = async (data: {
     logger.info(`[${jobId}] STL Path: ${stlPath}`)
 
     // Check if STL exists
-    if (!fs.existsSync(stlPath)) {
-      throw new Error(`STL file not found: ${stlPath}`)
-    }
+    if (!fs.existsSync(stlPath)) throw new Error(`STL file not found: ${stlPath}`)
 
     // Get storage path from environment
     const STORAGE_PATH = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../../storage')
 
     // Build color STL objects - we'll create colored versions of the same STL
-    const colorSTLs = colors.map((color, index) => ({
+    const colorSTLs = colors.map((color) => ({
       color,
       stlPath, // Same STL, different colors
     }))
