@@ -7,6 +7,8 @@ interface JobStatusProps {
   jobId: string
   onStatusChange?: (status: string) => void
   onColorsExtracted?: (colors: string[]) => void
+  showDownloads?: boolean
+  showColors?: boolean
 }
 
 interface Job {
@@ -18,7 +20,13 @@ interface Job {
   dominantColors?: string[]
 }
 
-export default function JobStatus({ jobId, onStatusChange, onColorsExtracted }: JobStatusProps) {
+export default function JobStatus({
+  jobId,
+  onStatusChange,
+  onColorsExtracted,
+  showDownloads = true,
+  showColors = true,
+}: JobStatusProps) {
   const [job, setJob] = useState<Job | null>(null)
   const [loading, setLoading] = useState(true)
   const [colors, setColors] = useState<string[]>([])
@@ -133,7 +141,7 @@ export default function JobStatus({ jobId, onStatusChange, onColorsExtracted }: 
       </div>
 
       {/* Colores detectados */}
-      {colors.length > 0 && (
+      {showColors && colors.length > 0 && (
         <div className="p-3 bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg border border-purple-200">
           <div className="font-semibold text-sm text-gray-700 mb-2">
             🎨 Colores detectados ({colors.length}):
@@ -161,7 +169,7 @@ export default function JobStatus({ jobId, onStatusChange, onColorsExtracted }: 
       )}
 
       {/* Botón de descarga */}
-      {job.status === 'completed' && (
+      {showDownloads && job.status === 'completed' && (
         <div className="space-y-2">
           <a
             href={`${process.env.NEXT_PUBLIC_API_URL}/jobs/${jobId}/download-multicolor`}

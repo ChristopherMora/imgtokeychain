@@ -10,6 +10,7 @@ interface ParameterControlsProps {
     ringThickness: number
     ringPosition: 'top' | 'left' | 'right'
     threshold?: number
+    maxColors?: number
     borderEnabled?: boolean
     borderThickness?: number
     reliefEnabled?: boolean
@@ -83,7 +84,7 @@ export default function ParameterControls({ parameters, onChange, onGenerate, is
       <div>
         <h3 className="font-semibold mb-3 text-gray-700">Calidad de Imagen</h3>
         
-        <div>
+        <div className="space-y-4">
           <label className="flex justify-between text-sm mb-1">
             <span>Umbral de detección</span>
             <span className="font-mono text-primary-600">{parameters.threshold || 180}</span>
@@ -100,13 +101,32 @@ export default function ParameterControls({ parameters, onChange, onGenerate, is
           <p className="text-xs text-gray-500 mt-1">
             Menor = más detalle (puede incluir ruido) • Mayor = más limpio (puede perder detalle)
           </p>
+
+          <div>
+            <label className="flex justify-between text-sm mb-1">
+              <span>Máximo de colores</span>
+              <span className="font-mono text-primary-600">{parameters.maxColors || 4}</span>
+            </label>
+            <input
+              type="range"
+              min="2"
+              max="8"
+              step="1"
+              value={parameters.maxColors || 4}
+              onChange={(e) => updateParam('maxColors', Number(e.target.value))}
+              className="w-full"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Menos colores = más limpio y fácil de imprimir • Más colores = más fidelidad (puede crear ruido en ilustraciones con muchos detalles)
+            </p>
+          </div>
         </div>
       </div>
 
-      {/* Borde del Llavero */}
+      {/* Borde de Unión (Stroke) */}
       <div>
         <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-gray-700">Borde Marco</h3>
+          <h3 className="font-semibold text-gray-700">Stroke de Unión</h3>
           <label className="relative inline-flex items-center cursor-pointer">
             <input
               type="checkbox"
@@ -121,7 +141,7 @@ export default function ParameterControls({ parameters, onChange, onGenerate, is
         {(parameters.borderEnabled ?? false) && (
           <div className="pl-4 border-l-2 border-primary-200">
             <label className="flex justify-between text-sm mb-1">
-              <span>Grosor del borde</span>
+              <span>Ancho del stroke</span>
               <span className="font-mono text-primary-600">{parameters.borderThickness || 2}mm</span>
             </label>
             <input
@@ -134,7 +154,7 @@ export default function ParameterControls({ parameters, onChange, onGenerate, is
               className="w-full"
             />
             <p className="text-xs text-gray-500 mt-1">
-              Borde alrededor del logo para darle forma de llavero. En modo multicolor se desactiva automáticamente para preservar detalles.
+              Crea una capa exterior para unir piezas separadas del llavero. Mayor valor = más unión entre partes.
             </p>
           </div>
         )}

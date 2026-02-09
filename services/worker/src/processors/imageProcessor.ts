@@ -5,16 +5,17 @@ import { logger } from '../utils/logger'
 import { preprocessImage, extractDominantColors } from './imagePreprocessor'
 import { imageToSvg } from './svgGenerator'
 import { svgToStl } from './stlGenerator'
-import { svgToStlThree } from './stlGeneratorThree'
 import { addRing } from './ringGenerator'
 import { segmentByColorsWithSilhouette } from './colorSegmentation'
 import { generate3MFFromColorSTLs } from './colorGenerator'
 import { removeBackground, extractColorsFromForeground } from './backgroundRemover'
 import { generateCompositeImage } from './compositeGenerator'
+import { dilateMask, removeSmallComponents } from './maskEnhancer'
 
 const prisma = new PrismaClient()
 
 const STORAGE_PATH = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../../storage')
+const HEX_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/
 
 interface JobData {
   jobId: string
@@ -28,10 +29,64 @@ interface JobData {
     ringThickness: number
     ringPosition: string
     threshold?: number
+    maxColors?: number
     borderEnabled?: boolean
     borderThickness?: number
     reliefEnabled?: boolean
   }
+}
+
+const createStrokeMask = async (
+  jobId: string,
+  storagePath: string,
+  silhouetteMask: Buffer,
+  width: number,
+  height: number,
+  params: JobData['params']
+): Promise<{ color: string; maskPath: string } | null> => {
+  const borderThicknessMm = params.borderThickness ?? 0
+  if (!params.borderEnabled || borderThicknessMm <= 0) return null
+
+  const pxPerMmX = width / Math.max(1, params.width)
+  const pxPerMmY = height / Math.max(1, params.height)
+  const strokePx = Math.max(1, Math.min(80, Math.round(borderThicknessMm * ((pxPerMmX + pxPerMmY) / 2))))
+
+  const dilated = await dilateMask(silhouetteMask, width, height, strokePx)
+  const ringMask = Buffer.alloc(width * height)
+
+  let strokePixels = 0
+  for (let i = 0; i < ringMask.length; i++) {
+    if (dilated[i] === 255 && silhouetteMask[i] === 0) {
+      ringMask[i] = 255
+      strokePixels++
+    }
+  }
+
+  if (strokePixels < Math.max(80, Math.round(width * height * 0.00005))) {
+    logger.info(`[${jobId}] Stroke skipped: not enough pixels (${strokePixels})`)
+    return null
+  }
+
+  const minComponentArea = Math.max(20, Math.round(width * height * 0.00002))
+  const cleanedMask = removeSmallComponents(ringMask, width, height, minComponentArea)
+
+  let cleanedPixels = 0
+  for (let i = 0; i < cleanedMask.length; i++) {
+    if (cleanedMask[i] === 255) cleanedPixels++
+  }
+  if (cleanedPixels < Math.max(50, Math.round(width * height * 0.00003))) {
+    logger.info(`[${jobId}] Stroke skipped after cleanup: ${cleanedPixels} pixels`)
+    return null
+  }
+
+  const maskPath = path.join(storagePath, 'processed', `${jobId}_stroke_mask.pgm`)
+  const pgmHeader = `P5\n${width} ${height}\n255\n`
+  await fs.writeFile(maskPath, Buffer.concat([Buffer.from(pgmHeader, 'ascii'), cleanedMask]))
+
+  logger.info(
+    `[${jobId}] Stroke layer created (${borderThicknessMm}mm -> ${strokePx}px): ${cleanedPixels} pixels`
+  )
+  return { color: '#f5f5f5', maskPath }
 }
 
 export const processImageJob = async (data: JobData) => {
@@ -56,7 +111,8 @@ export const processImageJob = async (data: JobData) => {
     const { cleanImagePath, silhouetteMaskPath, width, height } = await removeBackground(
       filePath,
       jobId,
-      STORAGE_PATH
+      STORAGE_PATH,
+      params.threshold
     )
     
     // Leer la máscara de silueta para usarla en la extracción de colores
@@ -72,13 +128,25 @@ export const processImageJob = async (data: JobData) => {
     
     // Step 2: Extract dominant colors from FOREGROUND ONLY
     logger.info(`[${jobId}] Step 2: Extracting colors from foreground...`)
-    const dominantColors = await extractColorsFromForeground(
-      filePath,
+    const extractedColors = await extractColorsFromForeground(
+      cleanImagePath,
       silhouetteMask,
       width,
       height,
-      jobId
+      jobId,
+      params.maxColors
     )
+    const dominantColors = extractedColors
+      .map(color => color.trim())
+      .filter(color => HEX_COLOR_REGEX.test(color))
+    if (dominantColors.length === 0) {
+      dominantColors.push('#3cb4dc', '#dc3ca0')
+      logger.warn(`[${jobId}] No valid dominant colors extracted, using fallback palette`)
+    } else if (dominantColors.length !== extractedColors.length) {
+      logger.warn(
+        `[${jobId}] Filtered invalid colors from palette. Before: ${extractedColors.join(', ')} | After: ${dominantColors.join(', ')}`
+      )
+    }
     await prisma.job.update({
       where: { id: jobId },
       data: { dominantColors, progress: 20 },
@@ -88,7 +156,7 @@ export const processImageJob = async (data: JobData) => {
     // Step 3: Segment colors WITHIN the silhouette
     logger.info(`[${jobId}] Step 3: Segmenting colors within silhouette...`)
     const colorMasks = await segmentByColorsWithSilhouette(
-      filePath,
+      cleanImagePath,
       dominantColors,
       silhouetteMask,
       width,
@@ -96,6 +164,19 @@ export const processImageJob = async (data: JobData) => {
       jobId,
       STORAGE_PATH
     )
+
+    const strokeMask = await createStrokeMask(
+      jobId,
+      STORAGE_PATH,
+      silhouetteMask,
+      width,
+      height,
+      params
+    )
+    if (strokeMask) {
+      colorMasks.unshift(strokeMask)
+    }
+
     logger.info(`[${jobId}] Created ${colorMasks.length} color masks`)
 
     // Importante: la segmentación puede agregar/quitar capas (ej: negro para texto/runner),
@@ -218,8 +299,8 @@ export const processImageJob = async (data: JobData) => {
         stls: colorSTLs.map((item, i) => `color_${i + 1}_${item.color.replace('#', '')}.stl`)
       },
       instructions: {
-        es: `Este archivo contiene:\n1. Un archivo 3MF listo para Bambu Studio/PrusaSlicer con ${colorSTLs.length} colores\n2. ${colorSTLs.length} archivos STL individuales por si necesitas importarlos manualmente\n\nPara usar el 3MF:\n- Abre ${jobId}_multicolor.3mf en tu slicer\n- Los colores ya están asignados\n- Ajusta configuración de impresora y listo`,
-        en: `This file contains:\n1. A 3MF file ready for Bambu Studio/PrusaSlicer with ${colorSTLs.length} colors\n2. ${colorSTLs.length} individual STL files in case you need to import them manually\n\nTo use the 3MF:\n- Open ${jobId}_multicolor.3mf in your slicer\n- Colors are already assigned\n- Adjust printer settings and you're ready`
+        es: `Este archivo contiene:\n1. Un archivo 3MF multi-color con ${colorSTLs.length} colores/capas (compatible con Bambu Studio)\n2. ${colorSTLs.length} archivos STL individuales (uno por color)\n\nCómo usar:\n- Abre ${jobId}_multicolor.3mf en Bambu Studio o un slicer compatible con 3MF.\n- Si necesitas ajustar colores manualmente, importa los STLs del ZIP y asigna filamentos por pieza.\n- Ajusta configuración de impresora y listo.`,
+        en: `This file contains:\n1. A multi-color 3MF with ${colorSTLs.length} colors/layers (Bambu Studio compatible)\n2. ${colorSTLs.length} individual STL files (one per color)\n\nHow to use:\n- Open ${jobId}_multicolor.3mf in Bambu Studio or any 3MF-compatible slicer.\n- If you need manual color control, import the STLs from the ZIP and assign filaments per part.\n- Adjust printer settings and you're ready.`
       }
     }
     

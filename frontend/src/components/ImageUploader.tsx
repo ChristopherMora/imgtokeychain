@@ -2,19 +2,22 @@
 
 import { useCallback, useState } from 'react'
 import { Upload, X } from 'lucide-react'
+import ImageCropper from './ImageCropper'
 
 interface ImageUploaderProps {
   onImageUpload: (imageUrl: string) => void
-  onJobCreated: (jobId: string) => void
   onFileSelected?: (file: File) => void
-  parameters?: any
+  showPreview?: boolean
 }
 
-export default function ImageUploader({ onImageUpload, onJobCreated, onFileSelected, parameters }: ImageUploaderProps) {
+export default function ImageUploader({ onImageUpload, onFileSelected, showPreview = true }: ImageUploaderProps) {
   const [isDragging, setIsDragging] = useState(false)
-  const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
+  const [fileName, setFileName] = useState<string | null>(null)
+  const [pendingImage, setPendingImage] = useState<string | null>(null)
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [showCropper, setShowCropper] = useState(false)
 
   const handleFile = async (file: File) => {
     setError(null)
@@ -30,64 +33,15 @@ export default function ImageUploader({ onImageUpload, onJobCreated, onFileSelec
       return
     }
 
-    // Preview local
+    // Preview local para recorte
     const reader = new FileReader()
     reader.onloadend = () => {
       const result = reader.result as string
-      setPreview(result)
-      onImageUpload(result)
+      setPendingImage(result)
+      setPendingFile(file)
+      setShowCropper(true)
     }
     reader.readAsDataURL(file)
-
-    // Guardar archivo para regeneración
-    if (onFileSelected) {
-      onFileSelected(file)
-    }
-
-    // Upload al servidor
-    setUploading(true)
-    console.log('🔵 Iniciando upload a la API...')
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      if (parameters) {
-        formData.append('params', JSON.stringify(parameters))
-      }
-
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001/api'
-      console.log('🔵 API URL:', apiUrl)
-      console.log('🔵 Enviando POST a:', `${apiUrl}/jobs`)
-      console.log('🔵 FormData contiene:', {
-        hasFile: formData.has('file'),
-        hasParams: formData.has('params'),
-      })
-      
-      const response = await fetch(`${apiUrl}/jobs`, {
-        method: 'POST',
-        body: formData,
-        mode: 'cors',
-      }).catch(fetchErr => {
-        console.error('❌ Fetch falló:', fetchErr)
-        throw fetchErr
-      })
-
-      console.log('🔵 Response recibido:', response)
-      console.log('🔵 Response status:', response.status)
-      
-      if (!response.ok) {
-        throw new Error('Error al subir la imagen')
-      }
-
-      const data = await response.json()
-      console.log('🔵 Job creado:', data.id)
-      onJobCreated(data.id)
-    } catch (err) {
-      console.error('❌ Error en upload:', err)
-      setError(err instanceof Error ? err.message : 'Error desconocido')
-    } finally {
-      setUploading(false)
-      console.log('🔵 Upload finalizado')
-    }
   }
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -110,16 +64,56 @@ export default function ImageUploader({ onImageUpload, onJobCreated, onFileSelec
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) handleFile(file)
+    e.target.value = ''
   }
 
   const handleClear = () => {
     setPreview(null)
+    setFileName(null)
     setError(null)
+    setPendingImage(null)
+    setPendingFile(null)
     onImageUpload('')
+  }
+
+  const applyFile = (file: File, dataUrl: string) => {
+    setPreview(dataUrl)
+    setFileName(file.name)
+    onImageUpload(dataUrl)
+    if (onFileSelected) onFileSelected(file)
+  }
+
+  const handleUseOriginal = () => {
+    if (!pendingImage || !pendingFile) return
+    applyFile(pendingFile, pendingImage)
+    setShowCropper(false)
+  }
+
+  const handleConfirmCrop = (result: { blob: Blob; dataUrl: string }) => {
+    if (!pendingFile) return
+    const croppedFile = new File([result.blob], `crop_${pendingFile.name.replace(/\.(png|jpg|jpeg)$/i, '')}.png`, {
+      type: 'image/png',
+    })
+    applyFile(croppedFile, result.dataUrl)
+    setShowCropper(false)
+  }
+
+  const handleCancelCrop = () => {
+    setPendingImage(null)
+    setPendingFile(null)
+    setShowCropper(false)
   }
 
   return (
     <div className="space-y-4">
+      {showCropper && pendingImage && (
+        <ImageCropper
+          src={pendingImage}
+          onCancel={handleCancelCrop}
+          onConfirm={handleConfirmCrop}
+          onUseOriginal={handleUseOriginal}
+        />
+      )}
       {!preview ? (
         <div
           onDrop={handleDrop}
@@ -140,13 +134,12 @@ export default function ImageUploader({ onImageUpload, onJobCreated, onFileSelec
             className="hidden"
             accept="image/png,image/jpeg,image/jpg"
             onChange={handleFileInput}
-            disabled={uploading}
           />
           
           <label htmlFor="file-upload" className="cursor-pointer">
             <Upload className="mx-auto h-12 w-12 text-gray-400 mb-4" />
             <p className="text-lg font-semibold text-gray-700 mb-2">
-              {uploading ? 'Subiendo...' : 'Arrastra tu imagen aquí'}
+              Arrastra tu imagen aquí
             </p>
             <p className="text-sm text-gray-500">
               o haz clic para seleccionar
@@ -156,7 +149,7 @@ export default function ImageUploader({ onImageUpload, onJobCreated, onFileSelec
             </p>
           </label>
         </div>
-      ) : (
+      ) : showPreview ? (
         <div className="relative">
           <img
             src={preview}
@@ -170,18 +163,24 @@ export default function ImageUploader({ onImageUpload, onJobCreated, onFileSelec
             <X className="h-4 w-4" />
           </button>
         </div>
+      ) : (
+        <div className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded-lg px-4 py-3">
+          <div className="text-sm text-gray-700">
+            Imagen cargada: <span className="font-medium">{fileName || 'archivo'}</span>
+          </div>
+          <button
+            onClick={handleClear}
+            className="inline-flex items-center gap-2 px-3 py-1.5 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-100"
+          >
+            <X className="h-4 w-4" />
+            Cambiar
+          </button>
+        </div>
       )}
 
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
           {error}
-        </div>
-      )}
-
-      {uploading && (
-        <div className="flex items-center justify-center py-4">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-          <span className="ml-3 text-gray-600">Procesando...</span>
         </div>
       )}
     </div>

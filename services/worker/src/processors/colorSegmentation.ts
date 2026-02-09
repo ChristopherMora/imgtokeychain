@@ -2,7 +2,7 @@ import sharp from 'sharp'
 import path from 'path'
 import fs from 'fs/promises'
 import { logger } from '../utils/logger'
-import { optimizeMaskForPotrace } from './maskEnhancer'
+import { optimizeMaskForPotrace, removeSmallComponents, erodeMask, dilateMask } from './maskEnhancer'
 
 /**
  * Convierte RGB a HSL
@@ -32,6 +32,81 @@ function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: n
   return { h: h * 360, s, l }
 }
 
+function toRgbBufferFromSingleChannel(buffer: Buffer): Buffer {
+  const rgb = Buffer.alloc(buffer.length * 3)
+  for (let i = 0; i < buffer.length; i++) {
+    const value = buffer[i]
+    rgb[i * 3] = value
+    rgb[i * 3 + 1] = value
+    rgb[i * 3 + 2] = value
+  }
+  return rgb
+}
+
+async function resizeSingleChannelNearest(
+  buffer: Buffer,
+  srcWidth: number,
+  srcHeight: number,
+  dstWidth: number,
+  dstHeight: number
+): Promise<Buffer> {
+  if (srcWidth === dstWidth && srcHeight === dstHeight) return Buffer.from(buffer)
+
+  const rgb = toRgbBufferFromSingleChannel(buffer)
+  const resized = await sharp(rgb, {
+    raw: { width: srcWidth, height: srcHeight, channels: 3 }
+  })
+    .resize(dstWidth, dstHeight, {
+      fit: 'fill',
+      kernel: 'nearest',
+      background: { r: 0, g: 0, b: 0, alpha: 1 }
+    })
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+
+  const output = Buffer.alloc(dstWidth * dstHeight)
+  const channels = resized.info.channels
+  for (let i = 0; i < output.length; i++) {
+    output[i] = resized.data[i * channels]
+  }
+  return output
+}
+
+async function resizeBinaryMask(
+  maskBuffer: Buffer,
+  srcWidth: number,
+  srcHeight: number,
+  dstWidth: number,
+  dstHeight: number,
+  crispEdges: boolean
+): Promise<Buffer> {
+  if (srcWidth === dstWidth && srcHeight === dstHeight) return Buffer.from(maskBuffer)
+
+  const rgb = toRgbBufferFromSingleChannel(maskBuffer)
+  let image = sharp(rgb, {
+    raw: { width: srcWidth, height: srcHeight, channels: 3 }
+  }).resize(dstWidth, dstHeight, {
+    fit: 'fill',
+    kernel: crispEdges ? 'nearest' : 'lanczos3',
+    background: { r: 0, g: 0, b: 0, alpha: 1 }
+  })
+
+  if (!crispEdges) {
+    image = image.blur(0.6).median(3)
+  }
+
+  const resized = await image
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+
+  const output = Buffer.alloc(dstWidth * dstHeight)
+  const channels = resized.info.channels
+  for (let i = 0; i < output.length; i++) {
+    output[i] = resized.data[i * channels] >= 128 ? 255 : 0
+  }
+  return output
+}
+
 /**
  * Segmenta una imagen por RANGOS DE HUE dentro de una silueta.
  * Esto funciona mucho mejor para logos con gradientes.
@@ -48,11 +123,33 @@ export const segmentByColorsWithSilhouette = async (
   try {
     logger.info(`[${jobId}] Segmenting by guided palette within silhouette...`)
     
-    // Leer imagen original
-    const { data } = await sharp(inputPath)
-      .removeAlpha()
+    const crispEdges = colors.length <= 6
+
+    // Leer los colores RGB ORIGINALES sin compositar alpha.
+    // flatten() y removeAlpha() corrompen los colores de píxeles semi-transparentes
+    // del borde (ej: negro con alpha=150 → gris que matchea rosa en vez de negro).
+    // Al leer raw RGBA, los canales R,G,B conservan el color real independientemente del alpha.
+    let imageReader = sharp(inputPath)
+    if (!crispEdges) {
+      imageReader = imageReader.median(2)
+    }
+    const rawResult = await imageReader
       .raw()
       .toBuffer({ resolveWithObject: true })
+    const rawChannels = rawResult.info.channels
+    // Extraer buffer RGB puro (3 canales) para que el resto del código use data[i*3]
+    let data: Buffer
+    if (rawChannels === 3) {
+      data = rawResult.data
+    } else {
+      const totalPixels = width * height
+      data = Buffer.alloc(totalPixels * 3)
+      for (let i = 0; i < totalPixels; i++) {
+        data[i * 3] = rawResult.data[i * rawChannels]
+        data[i * 3 + 1] = rawResult.data[i * rawChannels + 1]
+        data[i * 3 + 2] = rawResult.data[i * rawChannels + 2]
+      }
+    }
 
     // Si vienen colores dominantes, usarlos como guía principal (mucho más fiel que los picos de hue)
     const guidedPalette = colors
@@ -71,21 +168,99 @@ export const segmentByColorsWithSilhouette = async (
     const usesExtraDarkSlot = existingDarkIndex === -1
     const darkIndex = usesExtraDarkSlot ? guidedPalette.length : existingDarkIndex
 
-    // Asignar cada pixel dentro de la silueta al color más cercano
-    for (let i = 0; i < width * height; i++) {
-      if (silhouetteMask[i] !== 255) continue
-      const r = data[i * 3]
-      const g = data[i * 3 + 1]
-      const b = data[i * 3 + 2]
-      
-      const { s, l } = rgbToHsl(r, g, b)
-      // Capturar texto/runner oscuros
-      if (l < 0.38 && s < 0.32) {
-        assignments[i] = darkIndex
-        continue
+    const workingMask = silhouetteMask
+
+    const neighbors = [
+      [-1, 0], [1, 0], [0, -1], [0, 1],
+      [-1, -1], [1, -1], [-1, 1], [1, 1],
+    ] as const
+
+    // Crear una banda de borde usando una versión erosionada
+    let interiorMask = workingMask
+    if (width * height > 120_000) {
+      interiorMask = await erodeMask(workingMask, width, height, 1)
+      let interiorCount = 0
+      let silhouetteCount = 0
+      for (let i = 0; i < workingMask.length; i++) {
+        if (workingMask[i] === 255) silhouetteCount++
+        if (interiorMask[i] === 255) interiorCount++
       }
-      
-      let bestIdx = -1
+      if (interiorCount < silhouetteCount * 0.65) {
+        interiorMask = workingMask
+      }
+    }
+
+    const boundaryBand = new Uint8Array(width * height)
+    if (interiorMask !== workingMask) {
+      for (let i = 0; i < workingMask.length; i++) {
+        if (workingMask[i] === 255 && interiorMask[i] === 0) boundaryBand[i] = 1
+      }
+    } else {
+      for (let i = 0; i < workingMask.length; i++) {
+        if (workingMask[i] !== 255) continue
+        const x = i % width
+        const y = Math.floor(i / width)
+        for (const [dx, dy] of neighbors) {
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+          const nidx = ny * width + nx
+          if (workingMask[nidx] === 0) {
+            boundaryBand[i] = 1
+            break
+          }
+        }
+      }
+    }
+
+    // Para evitar halos por anti‑alias en el borde, podemos omitir el borde en la asignación
+    // y rellenarlo después desde el interior (solo si hay suficiente interior).
+    let silhouetteCount = 0
+    let boundaryCount = 0
+    for (let i = 0; i < workingMask.length; i++) {
+      if (workingMask[i] === 255) silhouetteCount++
+      if (boundaryBand[i] === 1) boundaryCount++
+    }
+    const interiorCount = Math.max(0, silhouetteCount - boundaryCount)
+    const skipBoundaryInAssignment = interiorCount >= Math.max(200, Math.round(silhouetteCount * 0.45))
+
+    if (skipBoundaryInAssignment) {
+      const expandedBoundary = new Uint8Array(boundaryBand)
+      const edgeRadius = crispEdges ? 1 : 0
+      if (edgeRadius > 0) {
+        for (let i = 0; i < boundaryBand.length; i++) {
+          if (boundaryBand[i] !== 1) continue
+          const x = i % width
+          const y = Math.floor(i / width)
+          for (let dy = -edgeRadius; dy <= edgeRadius; dy++) {
+            for (let dx = -edgeRadius; dx <= edgeRadius; dx++) {
+              const nx = x + dx
+              const ny = y + dy
+              if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+              const nidx = ny * width + nx
+              if (workingMask[nidx] === 255) expandedBoundary[nidx] = 1
+            }
+          }
+        }
+      }
+      boundaryBand.set(expandedBoundary)
+    }
+
+    const classifyPixel = (pixelIndex: number): number => {
+      const r = data[pixelIndex * 3]
+      const g = data[pixelIndex * 3 + 1]
+      const b = data[pixelIndex * 3 + 2]
+      const { s, l } = rgbToHsl(r, g, b)
+
+      const darkness = r + g + b
+      const isLowSat = s < 0.22
+      const isAbsoluteDark = l < 0.12 || darkness < 75
+      const isDarkGray = isLowSat && l < 0.45 && darkness < 220
+      if (isAbsoluteDark || isDarkGray) return darkIndex
+
+      if (guidedPalette.length === 0) return darkIndex
+
+      let bestIdx = 0
       let bestDist = Infinity
       for (let cIdx = 0; cIdx < guidedPalette.length; cIdx++) {
         const c = guidedPalette[cIdx]
@@ -95,32 +270,307 @@ export const segmentByColorsWithSilhouette = async (
           bestIdx = cIdx
         }
       }
-      // Importante: asignar SIEMPRE el pixel al color más cercano.
-      // Un cutoff duro (tolerancia) deja huecos (píxeles sin asignación) y se ven como líneas punteadas
-      // en texto/bordes finos tras la vectorización.
-      if (bestIdx !== -1) assignments[i] = bestIdx
+      return bestIdx
     }
+
+    // Asignar cada pixel dentro de la silueta al color más cercano.
+    // Usamos workingMask (silueta completa) para que TODOS los píxeles se asignen
+    // por su color real, incluyendo bordes y features finos (texto, líneas).
+    for (let i = 0; i < width * height; i++) {
+      if (workingMask[i] !== 255) continue
+      if (skipBoundaryInAssignment && boundaryBand[i] === 1) continue
+      assignments[i] = classifyPixel(i)
+    }
+
+    // Expandir ligeramente la capa oscura para absorber el anti‑aliasing de textos/contornos
+    // En logos con pocos colores (crispEdges), esto puede engrosar bordes y generar halos.
+    if (!crispEdges && darkIndex >= 0) {
+      const darkPixels: number[] = []
+      for (let i = 0; i < assignments.length; i++) {
+        if (assignments[i] === darkIndex) darkPixels.push(i)
+      }
+
+      const minDarkPixels = Math.max(80, Math.round(width * height * 0.0002))
+      if (darkPixels.length >= minDarkPixels) {
+        const expanded = new Uint8Array(width * height)
+        const maxDim = Math.max(width, height)
+        const radius = maxDim > 1200 ? 2 : 1
+
+        for (const idx of darkPixels) {
+          const x = idx % width
+          const y = Math.floor(idx / width)
+          for (let dy = -radius; dy <= radius; dy++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+              const nx = x + dx
+              const ny = y + dy
+              if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+              const nidx = ny * width + nx
+              expanded[nidx] = 1
+            }
+          }
+        }
+
+        for (let i = 0; i < expanded.length; i++) {
+          if (expanded[i] === 1 && workingMask[i] === 255) {
+            assignments[i] = darkIndex
+          }
+        }
+      }
+    }
+
+    // Rellenar píxeles del borde externo que NO fueron asignados (assignments=-1)
+    // Solo rellenar huecos, NO sobrescribir asignaciones correctas que ya tienen color real.
+    const radius = Math.max(1, Math.round(Math.max(width, height) / 1200))
+    for (let i = 0; i < boundaryBand.length; i++) {
+      if (boundaryBand[i] !== 1) continue
+      if (assignments[i] >= 0) continue  // Ya tiene asignación correcta, no sobrescribir
+      const x = i % width
+      const y = Math.floor(i / width)
+      const counts = new Map<number, number>()
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+          const nidx = ny * width + nx
+          const a = assignments[nidx]
+          if (a >= 0) {
+            counts.set(a, (counts.get(a) || 0) + 1)
+          }
+        }
+      }
+      if (counts.size > 0) {
+        let bestIdx = -1
+        let bestCount = -1
+        for (const [idx, count] of counts.entries()) {
+          if (count > bestCount) {
+            bestCount = count
+            bestIdx = idx
+          }
+        }
+        if (bestIdx >= 0) assignments[i] = bestIdx
+      } else {
+        assignments[i] = classifyPixel(i)
+      }
+    }
+
+    // Fallback global: si quedó algún pixel de silueta sin etiqueta, asignarlo por mayoría vecina.
+    // Evita micro-huecos que luego aparecen como "mordidas" en el 3D.
+    for (let i = 0; i < assignments.length; i++) {
+      if (workingMask[i] !== 255) continue
+      if (assignments[i] >= 0) continue
+      const x = i % width
+      const y = Math.floor(i / width)
+      const counts = new Map<number, number>()
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+          const nidx = ny * width + nx
+          const label = assignments[nidx]
+          if (label >= 0) counts.set(label, (counts.get(label) || 0) + 1)
+        }
+      }
+      if (counts.size > 0) {
+        let bestLabel = -1
+        let bestCount = -1
+        for (const [label, count] of counts.entries()) {
+          if (count > bestCount) {
+            bestCount = count
+            bestLabel = label
+          }
+        }
+        if (bestLabel >= 0) assignments[i] = bestLabel
+      } else {
+        assignments[i] = classifyPixel(i)
+      }
+    }
+
+    let keepExtraDarkLayer = usesExtraDarkSlot
+    if (usesExtraDarkSlot && darkIndex >= 0) {
+      let darkPixels = 0
+      for (let i = 0; i < assignments.length; i++) {
+        if (assignments[i] === darkIndex) darkPixels++
+      }
+
+      const darkRatio = darkPixels / Math.max(1, silhouetteCount)
+      const minDarkPixels = Math.max(120, Math.round(silhouetteCount * 0.008))
+      keepExtraDarkLayer = darkPixels >= minDarkPixels
+
+      if (!keepExtraDarkLayer && guidedPalette.length > 0) {
+        for (let i = 0; i < assignments.length; i++) {
+          if (assignments[i] !== darkIndex) continue
+          let bestIdx = 0
+          let bestDist = Infinity
+          const r = data[i * 3]
+          const g = data[i * 3 + 1]
+          const b = data[i * 3 + 2]
+          for (let cIdx = 0; cIdx < guidedPalette.length; cIdx++) {
+            const c = guidedPalette[cIdx]
+            const dist = redmeanDistance(r, g, b, c.r, c.g, c.b)
+            if (dist < bestDist) {
+              bestDist = dist
+              bestIdx = cIdx
+            }
+          }
+          assignments[i] = bestIdx
+        }
+        logger.info(
+          `[${jobId}] Ignoring extra dark layer (noise): ${darkPixels} pixels (${(darkRatio * 100).toFixed(2)}%)`
+        )
+      }
+    }
+
+    // Limpiar islotes mínimos por color para evitar "chispas" de color (ej. bordes rosados sueltos).
+    const labelCount = guidedPalette.length + (usesExtraDarkSlot ? 1 : 0)
+    const minIslandArea = crispEdges
+      ? Math.max(6, Math.round(width * height * 0.000004))
+      : Math.max(10, Math.round(width * height * 0.000008))
+    if (labelCount > 1) {
+      const visited = new Uint8Array(assignments.length)
+      const queue = new Int32Array(assignments.length)
+      for (let start = 0; start < assignments.length; start++) {
+        if (workingMask[start] !== 255) continue
+        if (visited[start] === 1) continue
+        const label = assignments[start]
+        if (label < 0) continue
+
+        let qh = 0
+        let qt = 0
+        queue[qt++] = start
+        visited[start] = 1
+        const component: number[] = []
+        const borderCounts = new Map<number, number>()
+
+        while (qh < qt) {
+          const idx = queue[qh++]
+          component.push(idx)
+          const x = idx % width
+          const y = Math.floor(idx / width)
+
+          for (const [dx, dy] of neighbors) {
+            const nx = x + dx
+            const ny = y + dy
+            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+            const nidx = ny * width + nx
+            if (workingMask[nidx] !== 255) continue
+            const nLabel = assignments[nidx]
+            if (nLabel === label) {
+              if (visited[nidx] === 0) {
+                visited[nidx] = 1
+                queue[qt++] = nidx
+              }
+            } else if (nLabel >= 0) {
+              borderCounts.set(nLabel, (borderCounts.get(nLabel) || 0) + 1)
+            }
+          }
+        }
+
+        if (component.length >= minIslandArea) continue
+        let replacement = -1
+        let bestCount = -1
+        for (const [nLabel, count] of borderCounts.entries()) {
+          if (count > bestCount) {
+            bestCount = count
+            replacement = nLabel
+          }
+        }
+        if (replacement >= 0 && replacement !== label) {
+          for (const idx of component) assignments[idx] = replacement
+        }
+      }
+    }
+
+    // Suavizado de etiquetas SOLO en los bordes entre colores
+    const labelBoundary = new Uint8Array(width * height)
+    for (let i = 0; i < assignments.length; i++) {
+      if (workingMask[i] !== 255) continue
+      const current = assignments[i]
+      if (current < 0) continue
+      const x = i % width
+      const y = Math.floor(i / width)
+      for (const [dx, dy] of neighbors) {
+        const nx = x + dx
+        const ny = y + dy
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+        const nidx = ny * width + nx
+        const other = assignments[nidx]
+        if (other >= 0 && other !== current) {
+          labelBoundary[i] = 1
+          break
+        }
+      }
+    }
+
+    const smoothIterations = crispEdges ? 0 : 1
+    for (let iter = 0; iter < smoothIterations; iter++) {
+      const next = new Int16Array(assignments)
+      for (let i = 0; i < labelBoundary.length; i++) {
+        if (labelBoundary[i] !== 1) continue
+        if (workingMask[i] !== 255) continue
+        const x = i % width
+        const y = Math.floor(i / width)
+        const counts = new Map<number, number>()
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx
+            const ny = y + dy
+            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+            const nidx = ny * width + nx
+            const a = assignments[nidx]
+            if (a >= 0) counts.set(a, (counts.get(a) || 0) + 1)
+          }
+        }
+        if (counts.size > 0) {
+          let bestIdx = -1
+          let bestCount = -1
+          for (const [idx, count] of counts.entries()) {
+            if (count > bestCount) {
+              bestCount = count
+              bestIdx = idx
+            }
+          }
+          if (bestIdx >= 0 && bestCount >= 5) next[i] = bestIdx
+        }
+      }
+      assignments.set(next)
+    }
+
+    const TARGET_SIZE = 2000
+    const maxDim = Math.max(width, height)
+    const scale = maxDim > TARGET_SIZE ? TARGET_SIZE / maxDim : 1
+    const targetWidth = Math.max(1, Math.round(width * scale))
+    const targetHeight = Math.max(1, Math.round(height * scale))
 
     // Construir buffers por color guiado
     const buildMask = async (colorIdx: number, colorHex: string, maskIndex: number, pixels: number[]) => {
-      const maskBuffer = Buffer.alloc(width * height)
+      let maskBuffer: Buffer = Buffer.alloc(width * height)
       for (const pix of pixels) maskBuffer[pix] = 255
-      const TARGET_SIZE = 2000
-      const maskImage = sharp(maskBuffer, { raw: { width, height, channels: 1 } })
-      const resizedBuffer = await maskImage
-        .greyscale()
-        .resize(TARGET_SIZE, TARGET_SIZE, {
-          fit: 'fill',  // ← CRÍTICO: 'fill' mantiene las posiciones relativas entre capas
-          kernel: 'nearest', // IMPORTANTE: nearest para mantener bordes definidos en máscaras binarias
-          background: { r: 0, g: 0, b: 0, alpha: 1 }
-        })
-        .threshold(128) // Asegurar que sea puramente binario (blanco/negro)
-        .raw()
-        .toBuffer({ resolveWithObject: true })
-      const pgmHeader = `P5\n${resizedBuffer.info.width} ${resizedBuffer.info.height}\n255\n`
+
+      // Limpieza de máscara para evitar "speckles" (ruido) que Potrace convierte en miles de islitas
+      // y luego se ven como puntitos/ruido en el 3D.
+      // Nota: hacemos la limpieza ANTES del resize para mantener el costo bajo.
+      const MAX_OPTIMIZE_PIXELS = 1_200_000
+      if (width * height <= MAX_OPTIMIZE_PIXELS) {
+        maskBuffer = await optimizeMaskForPotrace(maskBuffer, width, height, jobId)
+      }
+
+      // Eliminar componentes minúsculos (cuadritos/ruido)
+      const minArea = Math.max(20, Math.round(width * height * 0.00002))
+      maskBuffer = removeSmallComponents(maskBuffer, width, height, minArea)
+      const resizedBuffer = await resizeBinaryMask(
+        maskBuffer,
+        width,
+        height,
+        targetWidth,
+        targetHeight,
+        crispEdges
+      )
+      const pgmHeader = `P5\n${targetWidth} ${targetHeight}\n255\n`
       const pgmData = Buffer.concat([
         Buffer.from(pgmHeader, 'ascii'),
-        resizedBuffer.data
+        resizedBuffer
       ])
       const maskPath = path.join(
         storagePath,
@@ -140,6 +590,110 @@ export const segmentByColorsWithSilhouette = async (
       if (idx >= 0) pixelBuckets[idx].push(i)
     }
 
+    // Para logos con pocos colores, crear máscaras desde un label map redimensionado
+    // Esto evita solapamientos o huecos entre máscaras al redimensionar cada color por separado.
+    if (crispEdges) {
+      const labelBuffer = Buffer.alloc(width * height)
+      for (let i = 0; i < assignments.length; i++) {
+        const idx = assignments[i]
+        if (idx >= 0) labelBuffer[i] = idx + 1
+      }
+
+      let labelData: Buffer
+      let outWidth = width
+      let outHeight = height
+
+      if (targetWidth !== width || targetHeight !== height) {
+        labelData = await resizeSingleChannelNearest(
+          labelBuffer,
+          width,
+          height,
+          targetWidth,
+          targetHeight
+        )
+        outWidth = targetWidth
+        outHeight = targetHeight
+      } else {
+        labelData = Buffer.from(labelBuffer)
+      }
+
+      const targetPixels = outWidth * outHeight
+      const maskBuffers: Buffer[] = Array.from({ length: bucketCount }, () => Buffer.alloc(targetPixels))
+      const counts = new Array(bucketCount).fill(0)
+
+      for (let i = 0; i < targetPixels; i++) {
+        const label = labelData[i]
+        if (label > 0 && label - 1 < bucketCount) {
+          const bucket = label - 1
+          maskBuffers[bucket][i] = 255
+          counts[bucket]++
+        }
+      }
+
+      // === FIX: Prevenir que Potrace expanda máscaras de color sobre zonas oscuras ===
+      // Potrace suaviza curvas al vectorizar, lo que hace que la máscara rosa (la más grande)
+      // invada las zonas de texto/contornos negros. Solución:
+      // 1. Dilatar la máscara oscura 2px para crear una "zona de reserva"
+      // 2. Substraer esa zona de todas las máscaras no-oscuras
+      const darkPixels = darkIndex >= 0 && darkIndex < bucketCount ? counts[darkIndex] : 0
+      const darkRatio = darkPixels / Math.max(1, targetPixels)
+      const shouldApplyDarkReserve =
+        darkPixels > Math.max(100, Math.round(targetPixels * 0.002)) &&
+        darkRatio < 0.35 &&
+        (keepExtraDarkLayer || !usesExtraDarkSlot)
+
+      if (shouldApplyDarkReserve && darkIndex >= 0 && darkIndex < bucketCount) {
+        const dilatedDark = await dilateMask(maskBuffers[darkIndex], outWidth, outHeight, 1)
+        for (let bIdx = 0; bIdx < bucketCount; bIdx++) {
+          if (bIdx === darkIndex) continue
+          for (let i = 0; i < targetPixels; i++) {
+            if (dilatedDark[i] === 255) {
+              if (maskBuffers[bIdx][i] === 255) {
+                maskBuffers[bIdx][i] = 0
+                counts[bIdx]--
+              }
+            }
+          }
+        }
+        logger.info(
+          `[${jobId}] Reserved dark regions for crisp masks (${darkPixels} px, ${(darkRatio * 100).toFixed(2)}%)`
+        )
+      }
+
+      const writeMask = async (colorHex: string, maskIndex: number, maskBuffer: Buffer, pixels: number) => {
+        const minArea = Math.max(8, Math.round(targetPixels * 0.000004))
+        const cleaned = removeSmallComponents(maskBuffer, outWidth, outHeight, minArea)
+        const pgmHeader = `P5\n${outWidth} ${outHeight}\n255\n`
+        const pgmData = Buffer.concat([
+          Buffer.from(pgmHeader, 'ascii'),
+          cleaned
+        ])
+        const maskPath = path.join(
+          storagePath,
+          'processed',
+          `${jobId}_color${maskIndex}_mask.pgm`
+        )
+        await fs.writeFile(maskPath, pgmData)
+        masks.push({ color: colorHex, maskPath })
+        logger.info(`[${jobId}] Mask ${maskIndex} (${colorHex}) pixels: ${pixels}`)
+      }
+
+      let written = 0
+      for (let cIdx = 0; cIdx < guidedPalette.length; cIdx++) {
+        if (counts[cIdx] < 50) continue
+        const hex = colors[cIdx] || '#cccccc'
+        await writeMask(hex, written, maskBuffers[cIdx], counts[cIdx])
+        written++
+      }
+
+      if (usesExtraDarkSlot && keepExtraDarkLayer) {
+        const darkPixels = counts[darkIndex] || 0
+        if (darkPixels > 50) {
+          await writeMask('#000000', written, maskBuffers[darkIndex], darkPixels)
+          written++
+        }
+      }
+    } else {
     // Construir máscaras de la paleta
     let written = 0
     for (let cIdx = 0; cIdx < guidedPalette.length; cIdx++) {
@@ -151,12 +705,13 @@ export const segmentByColorsWithSilhouette = async (
     }
 
     // Máscara oscura (texto/runner) SOLO si agregamos slot extra
-    if (usesExtraDarkSlot) {
+    if (usesExtraDarkSlot && keepExtraDarkLayer) {
       const darkPixels = pixelBuckets[darkIndex]
       if (darkPixels.length > 50) {
         await buildMask(darkIndex, '#000000', written, darkPixels)
         written++
       }
+    }
     }
     
     // Si no hay suficientes máscaras, usar la silueta completa como fallback
@@ -165,25 +720,24 @@ export const segmentByColorsWithSilhouette = async (
       
       const silhouettePath = path.join(storagePath, 'processed', `${jobId}_silhouette.pgm`)
       
-      // Redimensionar silueta a 1000x1000
-      const TARGET_SIZE = 1000
-      const silhouetteImage = sharp(silhouetteMask, {
-        raw: { width, height, channels: 1 }
-      })
+      // Redimensionar silueta manteniendo proporción
+      const FALLBACK_TARGET = 1000
+      const fallbackScale = Math.max(width, height) > 0 ? FALLBACK_TARGET / Math.max(width, height) : 1
+      const fallbackWidth = Math.max(1, Math.round(width * fallbackScale))
+      const fallbackHeight = Math.max(1, Math.round(height * fallbackScale))
+      const resizedBuffer = await resizeBinaryMask(
+        silhouetteMask,
+        width,
+        height,
+        fallbackWidth,
+        fallbackHeight,
+        true
+      )
       
-      const resizedBuffer = await silhouetteImage
-        .greyscale()
-        .resize(TARGET_SIZE, TARGET_SIZE, {
-          fit: 'fill',
-          kernel: 'nearest'
-        })
-        .raw()
-        .toBuffer({ resolveWithObject: true })
-      
-      const pgmHeader = `P5\n${TARGET_SIZE} ${TARGET_SIZE}\n255\n`
+      const pgmHeader = `P5\n${fallbackWidth} ${fallbackHeight}\n255\n`
       const pgmData = Buffer.concat([
         Buffer.from(pgmHeader, 'ascii'),
-        resizedBuffer.data
+        resizedBuffer
       ])
       
       const fallbackPath = path.join(storagePath, 'processed', `${jobId}_color0_mask.pgm`)

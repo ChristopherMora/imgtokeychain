@@ -36,6 +36,7 @@ export const createJob = async (req: Request, res: Response, next: NextFunction)
       ringThickness = 2,
       ringPosition = 'top',
       threshold = 180,
+      maxColors = 4,
       borderEnabled = false,
       borderThickness = 2,
       reliefEnabled = false,
@@ -72,6 +73,7 @@ export const createJob = async (req: Request, res: Response, next: NextFunction)
         ringThickness,
         ringPosition,
         threshold,
+        maxColors,
         borderEnabled,
         borderThickness,
         reliefEnabled,
@@ -187,12 +189,12 @@ export const downloadJob = async (req: Request, res: Response, next: NextFunctio
   }
 }
 export const downloadJobColors = async (
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
+  req: Request,
+  res: Response,
+  next: NextFunction
 ) => {
   try {
-    const { id } = req.params
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
     logger.info(`Download colors requested for job: ${id}`)
 
     const job = await prisma.job.findUnique({
@@ -240,12 +242,12 @@ export const downloadJobColors = async (
 }
 
 export const download3MF = async (
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
+  req: Request,
+  res: Response,
+  next: NextFunction
 ) => {
   try {
-    const { id } = req.params
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
     logger.info(`Download 3MF requested for job: ${id}`)
 
     const job = await prisma.job.findUnique({
@@ -265,7 +267,8 @@ export const download3MF = async (
     }
 
     // Ruta del archivo 3MF
-    const mfPath = job.stlPath.replace('.stl', '.3mf')
+    const storagePath = process.env.STORAGE_PATH || path.resolve(__dirname, '../../../../storage')
+    const mfPath = path.join(storagePath, 'processed', `${id}.3mf`)
     
     if (!fs.existsSync(mfPath)) {
       logger.error(`3MF file not found: ${mfPath}`)
@@ -360,7 +363,7 @@ export const downloadMulticolorZip = async (req: Request, res: Response, next: N
  */
 export const getJobColors = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { id } = req.params
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
 
     const job = await prisma.job.findUnique({
       where: { id },
@@ -391,7 +394,7 @@ export const getJobColors = async (req: Request, res: Response, next: NextFuncti
  */
 export const updateJobColors = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { id } = req.params
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
     const { colors } = req.body
 
     if (!Array.isArray(colors) || colors.length === 0) {
@@ -448,8 +451,9 @@ export const updateJobColors = async (req: Request, res: Response, next: NextFun
  */
 export const downloadColorSTL = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { id, colorIndex } = req.params
-    const index = parseInt(colorIndex, 10)
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
+    const colorIndexParam = Array.isArray(req.params.colorIndex) ? req.params.colorIndex[0] : req.params.colorIndex
+    const index = parseInt(colorIndexParam, 10)
 
     logger.info(`Download color STL ${index} requested for job: ${id}`)
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 interface Preview2DProps {
   imageUrl: string
@@ -10,35 +10,61 @@ interface Preview2DProps {
 export default function Preview2D({ imageUrl, jobId }: Preview2DProps) {
   const [compositeUrl, setCompositeUrl] = useState<string | null>(null)
   const [showComposite, setShowComposite] = useState(false)
+  const objectUrlRef = useRef<string | null>(null)
   
   useEffect(() => {
-    if (jobId) {
-      // Intentar cargar la imagen compuesta
-      const checkComposite = async () => {
-        try {
-          const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001'
-          const response = await fetch(`${apiUrl}/api/jobs/${jobId}/composite`)
-          if (response.ok) {
-            const blob = await response.blob()
-            const url = URL.createObjectURL(blob)
-            setCompositeUrl(url)
-            setShowComposite(true)
-          }
-        } catch (error) {
-          console.log('Composite not ready yet')
+    let cancelled = false
+    let interval: ReturnType<typeof setInterval> | null = null
+
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = null
+    }
+    setCompositeUrl(null)
+    setShowComposite(false)
+
+    if (!jobId) {
+      return
+    }
+
+    const checkComposite = async () => {
+      try {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api'
+        const response = await fetch(`${apiUrl}/jobs/${jobId}/composite`, { cache: 'no-store' })
+        if (!response.ok) return
+
+        const blob = await response.blob()
+        if (cancelled) return
+
+        const url = URL.createObjectURL(blob)
+        if (objectUrlRef.current) {
+          URL.revokeObjectURL(objectUrlRef.current)
         }
-      }
-      
-      // Verificar cada 2 segundos
-      const interval = setInterval(checkComposite, 2000)
-      checkComposite() // Check inmediato
-      
-      return () => {
-        clearInterval(interval)
-        if (compositeUrl) URL.revokeObjectURL(compositeUrl)
+        objectUrlRef.current = url
+        setCompositeUrl(url)
+        setShowComposite(true)
+
+        if (interval) {
+          clearInterval(interval)
+          interval = null
+        }
+      } catch {
+        // Composite no listo aún o error transitorio, seguimos esperando
       }
     }
-  }, [jobId])
+
+    interval = setInterval(checkComposite, 2000)
+    checkComposite()
+
+    return () => {
+      cancelled = true
+      if (interval) clearInterval(interval)
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current)
+        objectUrlRef.current = null
+      }
+    }
+  }, [jobId, imageUrl])
   
   const displayUrl = showComposite && compositeUrl ? compositeUrl : imageUrl
   

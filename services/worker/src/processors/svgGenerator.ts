@@ -12,7 +12,8 @@ export const imageToSvg = async (imagePath: string, jobId: string): Promise<stri
     const outputPath = path.join(STORAGE_PATH, 'processed', `${jobId}.svg`)
     
     // -u aumenta la cuantización (más precisión en coordenadas), útil para texto/líneas finas
-    const command = `potrace "${imagePath}" -i -s -o "${outputPath}" -t 2 -a 0.0 -O 0.2 -u 50 -n`
+    // -t elimina "turdos" pequeños (cuadritos), -a suaviza curvas, -O controla tolerancia
+    const command = `potrace "${imagePath}" -i -s -o "${outputPath}" -t 5 -a 1.0 -O 0.2 -u 50`
     
     logger.info(`Running potrace with HIGH DETAIL settings: ${command}`)
     

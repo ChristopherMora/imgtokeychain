@@ -266,3 +266,105 @@ export async function optimizeMaskForPotrace(
     return maskBuffer
   }
 }
+
+/**
+ * Elimina componentes conectados muy pequeños para evitar "cuadritos" en el STL.
+ * Mantiene la forma general y detalles relevantes.
+ */
+export function removeSmallComponents(
+  maskBuffer: Buffer,
+  width: number,
+  height: number,
+  minArea: number
+): Buffer {
+  const total = width * height
+  if (total === 0) return maskBuffer
+
+  const visited = new Uint8Array(total)
+  const result = Buffer.from(maskBuffer)
+  const queue = new Int32Array(total)
+
+  const neighbors = [
+    [-1, 0], [1, 0], [0, -1], [0, 1],
+    [-1, -1], [1, -1], [-1, 1], [1, 1],
+  ] as const
+
+  for (let i = 0; i < total; i++) {
+    if (result[i] < 128 || visited[i]) continue
+
+    let qh = 0
+    let qt = 0
+    queue[qt++] = i
+    visited[i] = 1
+
+    let componentSize = 0
+    let keep = false
+    const componentPixels: number[] = []
+
+    while (qh < qt) {
+      const idx = queue[qh++]
+      componentSize++
+
+      if (!keep) {
+        componentPixels.push(idx)
+        if (componentSize > minArea) {
+          keep = true
+          componentPixels.length = 0
+        }
+      }
+
+      const x = idx % width
+      const y = Math.floor(idx / width)
+      for (const [dx, dy] of neighbors) {
+        const nx = x + dx
+        const ny = y + dy
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+        const nidx = ny * width + nx
+        if (visited[nidx] || result[nidx] < 128) continue
+        visited[nidx] = 1
+        queue[qt++] = nidx
+      }
+    }
+
+    if (!keep && componentPixels.length > 0) {
+      for (const idx of componentPixels) result[idx] = 0
+    }
+  }
+
+  return result
+}
+
+/**
+ * Cierre morfológico suave para rellenar micro-huecos sin "engordar" demasiado.
+ */
+export async function closeMask(
+  maskBuffer: Buffer,
+  width: number,
+  height: number,
+  iterations: number = 1
+): Promise<Buffer> {
+  let current = Buffer.from(maskBuffer)
+  for (let i = 0; i < iterations; i++) {
+    current = Buffer.from(await dilate(current, width, height, 1))
+    current = Buffer.from(await erode(current, width, height, 1))
+  }
+  return current
+}
+
+export async function erodeMask(
+  maskBuffer: Buffer,
+  width: number,
+  height: number,
+  iterations: number = 1
+): Promise<Buffer> {
+  return erode(maskBuffer, width, height, iterations)
+}
+
+export async function dilateMask(
+  maskBuffer: Buffer,
+  width: number,
+  height: number,
+  iterations: number = 1
+): Promise<Buffer> {
+  return dilate(maskBuffer, width, height, iterations)
+}

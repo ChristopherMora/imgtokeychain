@@ -25,17 +25,21 @@ export default function CrearLlaveroPage() {
     ringThickness: 2,
     ringPosition: 'top' as 'top' | 'left' | 'right',
     threshold: 180,
+    maxColors: 4,
     borderEnabled: false,
     borderThickness: 2,
     reliefEnabled: false,
   })
 
+  const resetJobState = () => {
+    setJobId(null)
+    setJobStatus('pending')
+    setDominantColors([])
+    setRefreshPreview(0)
+  }
+
   const handleGenerateKeychain = async () => {
-    console.log('🔵 Generar clicked, uploadedFile:', uploadedFile)
-    console.log('🔵 Parameters:', parameters)
-    
     if (!uploadedFile) {
-      console.error('❌ No hay archivo subido')
       return
     }
 
@@ -46,10 +50,8 @@ export default function CrearLlaveroPage() {
       const formData = new FormData()
       formData.append('file', uploadedFile)
       formData.append('params', JSON.stringify(parameters))
-      
-      console.log('🔵 Enviando FormData a API...')
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001/api'
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api'
       const response = await fetch(`${apiUrl}/jobs`, {
         method: 'POST',
         body: formData,
@@ -87,10 +89,16 @@ export default function CrearLlaveroPage() {
             <div className="bg-white rounded-xl shadow-lg p-6">
               <h2 className="text-xl font-bold mb-4">1. Subir Imagen</h2>
               <ImageUploader
-                onImageUpload={setUploadedImage}
-                onJobCreated={setJobId}
-                onFileSelected={setUploadedFile}
-                parameters={parameters}
+                showPreview={!jobId}
+                onImageUpload={(imageUrl) => {
+                  setUploadedImage(imageUrl || null)
+                  if (!imageUrl) setUploadedFile(null)
+                  resetJobState()
+                }}
+                onFileSelected={(file) => {
+                  setUploadedFile(file)
+                  resetJobState()
+                }}
               />
             </div>
 
@@ -115,6 +123,8 @@ export default function CrearLlaveroPage() {
                   jobId={jobId} 
                   onStatusChange={setJobStatus}
                   onColorsExtracted={setDominantColors}
+                  showDownloads={!(jobStatus === 'COMPLETED' && dominantColors.length > 0)}
+                  showColors={!(jobStatus === 'COMPLETED' && dominantColors.length > 0)}
                 />
               </div>
             )}
@@ -138,7 +148,7 @@ export default function CrearLlaveroPage() {
           {/* Panel Derecho - Preview */}
           <div className="space-y-6">
             {/* Preview 2D */}
-            {uploadedImage && (
+            {uploadedImage && jobId && (
               <div className="bg-white rounded-xl shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4">Preview 2D</h2>
                 <Preview2D imageUrl={uploadedImage} jobId={jobId || undefined} />
@@ -153,7 +163,6 @@ export default function CrearLlaveroPage() {
                   jobId={jobId} 
                   status={jobStatus} 
                   dominantColors={dominantColors} 
-                  originalImage={uploadedImage || undefined}
                   key={`preview-${refreshPreview}`}
                 />
               </div>
