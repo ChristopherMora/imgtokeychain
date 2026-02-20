@@ -4,6 +4,7 @@ import { useEffect, useState, Suspense } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls, Environment, Grid } from '@react-three/drei'
 import * as THREE from 'three'
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 
 interface Preview3DProps {
   jobId: string
@@ -18,54 +19,43 @@ interface MultiSTLModel {
   index: number
 }
 
-function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color?: string; index: number }) {
+interface STLModelProps {
+  stlData: ArrayBuffer
+  color?: string
+  index: number
+  onBoundingBox: (index: number, box: THREE.Box3) => void
+}
+
+function STLModel({ stlData, color, index, onBoundingBox }: STLModelProps) {
   const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null)
+
+  const optimizePreviewGeometry = (geo: THREE.BufferGeometry): THREE.BufferGeometry => {
+    const merged = mergeVertices(geo, 1e-4)
+    merged.computeVertexNormals()
+    merged.computeBoundingBox()
+    return merged
+  }
   
   // ASCII STL parser
   const parseAsciiSTL = (buffer: ArrayBuffer): THREE.BufferGeometry => {
     const text = new TextDecoder().decode(buffer)
     const vertices: number[] = []
-    const normals: number[] = []
     
-    // Match all vertices and normals
+    // Match all vertices
     const vertexPattern = /vertex\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)/g
-    const normalPattern = /facet\s+normal\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)/g
-    
-    let normalMatch
-    const normalList: number[][] = []
-    while ((normalMatch = normalPattern.exec(text)) !== null) {
-      normalList.push([parseFloat(normalMatch[1]), parseFloat(normalMatch[3]), parseFloat(normalMatch[5])])
-    }
     
     let vertexMatch
-    let facetIndex = 0
-    let vertexInFacet = 0
-    
     while ((vertexMatch = vertexPattern.exec(text)) !== null) {
       vertices.push(
         parseFloat(vertexMatch[1]),
         parseFloat(vertexMatch[3]),
         parseFloat(vertexMatch[5])
       )
-      
-      // Each facet has 3 vertices, all share the same normal
-      if (normalList[facetIndex]) {
-        normals.push(...normalList[facetIndex])
-      }
-      
-      vertexInFacet++
-      if (vertexInFacet === 3) {
-        vertexInFacet = 0
-        facetIndex++
-      }
     }
     
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
-    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
-    geometry.computeBoundingBox()
-    
-    return geometry
+    return optimizePreviewGeometry(geometry)
   }
   
   useEffect(() => {
@@ -83,16 +73,10 @@ function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color?: str
       // Binary STL format
       const faces = view.getUint32(80, true)
       const vertices: number[] = []
-      const normals: number[] = []
       
       for (let i = 0; i < faces; i++) {
         const offset = 84 + i * 50
-        
-        // Normal
-        const nx = view.getFloat32(offset, true)
-        const ny = view.getFloat32(offset + 4, true)
-        const nz = view.getFloat32(offset + 8, true)
-        
+
         // 3 vertices per face
         for (let j = 0; j < 3; j++) {
           const vOffset = offset + 12 + j * 12
@@ -101,41 +85,32 @@ function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color?: str
             view.getFloat32(vOffset + 4, true),
             view.getFloat32(vOffset + 8, true)
           )
-          normals.push(nx, ny, nz)
         }
       }
       
       const geometry = new THREE.BufferGeometry()
       geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
-      geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
-      geometry.computeBoundingBox()
-      
-      return geometry
+      return optimizePreviewGeometry(geometry)
     }
     
     try {
       const geo = parseSTL(stlData)
+      geo.computeBoundingBox()
+      if (geo.boundingBox) {
+        onBoundingBox(index, geo.boundingBox.clone())
+      }
       setGeometry(geo)
     } catch (error) {
       console.error('Error parsing STL:', error)
     }
-  }, [stlData])
+  }, [stlData, index, onBoundingBox])
   
   if (!geometry) return null
-  
-  // Center and scale the geometry
-  geometry.center()
-  geometry.computeBoundingBox()
-  const boundingBox = geometry.boundingBox!
-  const size = new THREE.Vector3()
-  boundingBox.getSize(size)
-  const maxDim = Math.max(size.x, size.y, size.z)
-  const scale = 3 / maxDim
   
   // Usar color recibido por prop o azul por defecto
   const modelColor = color || '#0ea5e9'
   return (
-    <mesh geometry={geometry} scale={scale}>
+    <mesh geometry={geometry}>
       <meshStandardMaterial color={modelColor} metalness={0.3} roughness={0.4} />
     </mesh>
   )
@@ -143,8 +118,55 @@ function STLModel({ stlData, color, index }: { stlData: ArrayBuffer; color?: str
 
 export default function Preview3D({ jobId, status, dominantColors }: Preview3DProps) {
   const [stlModels, setStlModels] = useState<MultiSTLModel[]>([])
+  const [boundingBoxes, setBoundingBoxes] = useState<Record<number, THREE.Box3>>({})
+  const [groupScale, setGroupScale] = useState(1)
+  const [groupCenter, setGroupCenter] = useState<THREE.Vector3>(new THREE.Vector3(0, 0, 0))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (stlModels.length === 0) {
+      setBoundingBoxes({})
+      setGroupScale(1)
+      setGroupCenter(new THREE.Vector3(0, 0, 0))
+      return
+    }
+    setBoundingBoxes({})
+  }, [stlModels])
+
+  const handleBoundingBox = (index: number, box: THREE.Box3) => {
+    setBoundingBoxes(prev => {
+      const next = { ...prev, [index]: box }
+      return next
+    })
+  }
+
+  useEffect(() => {
+    if (stlModels.length === 0) return
+    if (Object.keys(boundingBoxes).length < stlModels.length) return
+
+    const union = new THREE.Box3()
+    let initialized = false
+    for (const model of stlModels) {
+      const box = boundingBoxes[model.index]
+      if (!box) continue
+      if (!initialized) {
+        union.copy(box)
+        initialized = true
+      } else {
+        union.union(box)
+      }
+    }
+    if (!initialized) return
+
+    const size = new THREE.Vector3()
+    const center = new THREE.Vector3()
+    union.getSize(size)
+    union.getCenter(center)
+    const maxDim = Math.max(size.x, size.y, size.z, 1e-6)
+    setGroupScale(3 / maxDim)
+    setGroupCenter(center)
+  }, [boundingBoxes, stlModels])
 
   useEffect(() => {
     // Only fetch STL when job is completed
@@ -259,14 +281,19 @@ export default function Preview3D({ jobId, status, dominantColors }: Preview3DPr
 
         {/* Multiple STL Models */}
         <Suspense fallback={null}>
-          {stlModels.map((model) => (
-            <STLModel 
-              key={model.index}
-              stlData={model.stlData}
-              color={model.color}
-              index={model.index}
-            />
-          ))}
+          <group scale={[groupScale, groupScale, groupScale]}>
+            <group position={[-groupCenter.x, -groupCenter.y, -groupCenter.z]}>
+              {stlModels.map((model) => (
+                <STLModel 
+                  key={model.index}
+                  stlData={model.stlData}
+                  color={model.color}
+                  index={model.index}
+                  onBoundingBox={handleBoundingBox}
+                />
+              ))}
+            </group>
+          </group>
         </Suspense>
 
         {/* Grid */}

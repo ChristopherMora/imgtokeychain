@@ -11,6 +11,7 @@ import ColorPicker from '@/components/ColorPicker'
 export default function CrearLlaveroPage() {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
+  const [removeBackgroundEnabled, setRemoveBackgroundEnabled] = useState(true)
   const [jobId, setJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<string>('pending')
   const [dominantColors, setDominantColors] = useState<string[]>([])
@@ -49,7 +50,10 @@ export default function CrearLlaveroPage() {
     try {
       const formData = new FormData()
       formData.append('file', uploadedFile)
-      formData.append('params', JSON.stringify(parameters))
+      formData.append('params', JSON.stringify({
+        ...parameters,
+        removeBackgroundEnabled,
+      }))
 
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api'
       const response = await fetch(`${apiUrl}/jobs`, {
@@ -92,11 +96,15 @@ export default function CrearLlaveroPage() {
                 showPreview={!jobId}
                 onImageUpload={(imageUrl) => {
                   setUploadedImage(imageUrl || null)
-                  if (!imageUrl) setUploadedFile(null)
+                  if (!imageUrl) {
+                    setUploadedFile(null)
+                    setRemoveBackgroundEnabled(true)
+                  }
                   resetJobState()
                 }}
-                onFileSelected={(file) => {
+                onFileSelected={(file, metadata) => {
                   setUploadedFile(file)
+                  setRemoveBackgroundEnabled(metadata.removeBackgroundEnabled)
                   resetJobState()
                 }}
               />

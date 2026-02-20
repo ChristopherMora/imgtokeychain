@@ -652,6 +652,7 @@ export const extractColorsFromForeground = async (
     for (let i = 0; i < width * height; i++) {
       // Solo procesar píxeles del logo
       if (silhouetteMask[i] !== 255) continue
+      if (rawChannels === 4 && rawResult.data[i * rawChannels + 3] < 128) continue
       foregroundPixels++
       
       const r = data[i * 3]
@@ -728,10 +729,10 @@ export const extractColorsFromForeground = async (
     // para evitar que la segmentación cree una capa extra fuera del límite.
     const darkCandidate = darkColors.find(c => c.lightness < 0.35) || null
     const darkFraction = darkCandidate && foregroundPixels > 0 ? darkCandidate.count / foregroundPixels : 0
-    const minDarkFraction = targetMaxColors <= 3 ? 0.03 : 0.015
+    const minDarkFraction = targetMaxColors <= 3 ? 0.01 : 0.006
     const hasUsefulDark =
       !!darkCandidate &&
-      darkCandidate.count > 120 &&
+      darkCandidate.count > 40 &&
       darkFraction >= minDarkFraction
     const maxSaturated = Math.max(0, Math.min(8, targetMaxColors - (hasUsefulDark ? 1 : 0)))
 

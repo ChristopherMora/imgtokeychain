@@ -14,6 +14,7 @@ interface StlParams {
   borderEnabled?: boolean
   borderThickness?: number
   reliefEnabled?: boolean
+  subtractSvgPaths?: string[]
 }
 
 async function getSvgViewBoxSize(svgPath: string): Promise<{ width: number; height: number } | null> {
@@ -48,6 +49,7 @@ export const svgToStl = async (
     const borderEnabled = params.borderEnabled ?? false  // Desactivado por defecto para preservar detalles
     const borderThicknessMm = Math.max(0, params.borderThickness ?? 0.3)
     const reliefEnabled = params.reliefEnabled ?? false
+    const subtractSvgPaths = (params.subtractSvgPaths ?? []).filter(Boolean).filter(p => p !== svgPath)
     
     let scadScript: string
     
@@ -92,11 +94,20 @@ linear_extrude(height = ${params.thickness}, center = false)
 `
     } else {
       // Sin borde ni relieve (modo original)
+      const baseShape2D = subtractSvgPaths.length > 0
+        ? `difference() {
+    scale([${scaleX}, ${scaleY}, 1])
+      import("${svgPath}", center = false);
+    union() {
+${subtractSvgPaths.map(p => `      scale([${scaleX}, ${scaleY}, 1])\n        import("${p}", center = false);`).join('\n')}
+    }
+  }`
+        : `scale([${scaleX}, ${scaleY}, 1])
+    import("${svgPath}", center = false);`
       scadScript = `
 // Llavero simple ${jobId}
 linear_extrude(height = ${params.thickness}, center = false)
-  scale([${scaleX}, ${scaleY}, 1])
-    import("${svgPath}", center = false);
+  ${baseShape2D}
 `
     }
 

@@ -8,7 +8,7 @@ type CropRect = { x: number; y: number; width: number; height: number }
 interface ImageCropperProps {
   src: string
   onCancel: () => void
-  onConfirm: (result: { blob: Blob; dataUrl: string }) => void
+  onConfirm: (result: { blob: Blob; dataUrl: string; removeBackgroundEnabled: boolean }) => void
   onUseOriginal?: () => void
 }
 
@@ -380,7 +380,8 @@ const removeBackgroundFromImageData = (imageData: ImageData, threshold: number) 
   const radius = 1
   mask = closeMask(mask, width, height, radius)
   const minArea = Math.max(30, Math.round(pixelCount * 0.00005))
-  mask = removeSmallComponents(mask, width, height, minArea)
+  const cleanedMask = removeSmallComponents(mask, width, height, minArea)
+  mask = new Uint8Array(cleanedMask)
 
   const output = new Uint8ClampedArray(data)
   for (let i = 0; i < pixelCount; i++) {
@@ -549,7 +550,7 @@ export default function ImageCropper({ src, onCancel, onConfirm, onUseOriginal }
     canvas.toBlob((blob) => {
       if (!blob) return
       const dataUrl = canvas.toDataURL('image/png')
-      onConfirm({ blob, dataUrl })
+      onConfirm({ blob, dataUrl, removeBackgroundEnabled: removeBgEnabled })
     }, 'image/png')
   }
 

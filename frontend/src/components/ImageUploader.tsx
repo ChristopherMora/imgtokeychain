@@ -6,7 +6,7 @@ import ImageCropper from './ImageCropper'
 
 interface ImageUploaderProps {
   onImageUpload: (imageUrl: string) => void
-  onFileSelected?: (file: File) => void
+  onFileSelected?: (file: File, metadata: { removeBackgroundEnabled: boolean }) => void
   showPreview?: boolean
 }
 
@@ -76,25 +76,33 @@ export default function ImageUploader({ onImageUpload, onFileSelected, showPrevi
     onImageUpload('')
   }
 
-  const applyFile = (file: File, dataUrl: string) => {
+  const applyFile = (
+    file: File,
+    dataUrl: string,
+    metadata: { removeBackgroundEnabled: boolean }
+  ) => {
     setPreview(dataUrl)
     setFileName(file.name)
     onImageUpload(dataUrl)
-    if (onFileSelected) onFileSelected(file)
+    if (onFileSelected) onFileSelected(file, metadata)
   }
 
   const handleUseOriginal = () => {
     if (!pendingImage || !pendingFile) return
-    applyFile(pendingFile, pendingImage)
+    applyFile(pendingFile, pendingImage, { removeBackgroundEnabled: false })
     setShowCropper(false)
   }
 
-  const handleConfirmCrop = (result: { blob: Blob; dataUrl: string }) => {
+  const handleConfirmCrop = (result: {
+    blob: Blob
+    dataUrl: string
+    removeBackgroundEnabled: boolean
+  }) => {
     if (!pendingFile) return
     const croppedFile = new File([result.blob], `crop_${pendingFile.name.replace(/\.(png|jpg|jpeg)$/i, '')}.png`, {
       type: 'image/png',
     })
-    applyFile(croppedFile, result.dataUrl)
+    applyFile(croppedFile, result.dataUrl, { removeBackgroundEnabled: result.removeBackgroundEnabled })
     setShowCropper(false)
   }
 

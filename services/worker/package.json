@@ -24,6 +24,7 @@
     "svg-path-parser": "^1.1.0",
     "three": "^0.182.0",
     "uuid": "^11.0.5",
+    "vectortracer": "^0.1.2",
     "winston": "^3.17.0"
   },
   "devDependencies": {
