@@ -7,14 +7,14 @@ import fs from 'fs'
 import { logger } from '../utils/logger'
 
 const prisma = new PrismaClient()
-const jobQueue = new Queue('image-processing', {
-  connection: {
-    host: process.env.REDIS_URL?.includes('://') 
-      ? new URL(process.env.REDIS_URL).hostname 
-      : 'redis',
-    port: 6379,
-  }
-})
+const redisConnection = {
+  host: process.env.REDIS_URL?.includes('://')
+    ? new URL(process.env.REDIS_URL).hostname
+    : 'redis',
+  port: 6379,
+}
+const jobQueue = new Queue('image-processing', { connection: redisConnection })
+const regenerate3MFQueue = new Queue('regenerate-3mf', { connection: redisConnection })
 
 export const createJob = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -24,9 +24,7 @@ export const createJob = async (req: Request, res: Response, next: NextFunction)
 
     // Parse parameters
     const params = req.body.params ? JSON.parse(req.body.params) : {}
-    
-    console.log('Received params:', params) // DEBUG
-    
+
     const {
       width = 50,
       height = 50,
@@ -431,7 +429,7 @@ export const updateJobColors = async (req: Request, res: Response, next: NextFun
 
     // Add regeneration task to queue
     logger.info(`[${id}] Adding 3MF regeneration task to queue...`)
-    await jobQueue.add('regenerate-3mf', {
+    await regenerate3MFQueue.add('regenerate-3mf', {
       jobId: id,
       colors: colors,
       stlPath: job.stlPath,

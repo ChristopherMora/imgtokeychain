@@ -693,17 +693,49 @@ export const extractColorsFromForeground = async (
     }
     
     // Separar colores saturados de colores oscuros/grises
-    const saturatedColors = Array.from(colorMap.entries())
+    const saturatedRaw = Array.from(colorMap.entries())
       .map(([color, data]) => ({ color, ...data }))
       .filter(c => c.saturation > 0.1)  // Colores con saturación
       .sort((a, b) => b.count - a.count)
-    
+
+    // Fusionar buckets de cuantización cercanos antes de filtrar por frecuencia.
+    // Problema: la cuantización con paso 16 fragmenta colores graduales (ej: lavanda, cielos)
+    // en docenas de buckets pequeños que individualmente no superan el mínimo de fracción.
+    // Solución: agrupar colores cuya distancia redmean < CLUSTER_DIST en un único cluster.
+    // El cluster hereda las propiedades (hue, saturation, lightness) del bucket más frecuente.
+    interface SaturatedCluster {
+      color: string
+      count: number
+      saturation: number
+      hue: number
+      lightness: number
+      r: number
+      g: number
+      b: number
+    }
+    const CLUSTER_DIST = 25
+    const saturatedClusters: SaturatedCluster[] = []
+    for (const c of saturatedRaw) {
+      const [r, g, b] = c.color.split(',').map(Number)
+      const nearest = saturatedClusters.find(cl => redmeanDistance(r, g, b, cl.r, cl.g, cl.b) < CLUSTER_DIST)
+      if (nearest) {
+        nearest.count += c.count
+      } else {
+        saturatedClusters.push({ ...c, r, g, b })
+      }
+    }
+    // Re-ordenar por peso acumulado
+    saturatedClusters.sort((a, b) => b.count - a.count)
+
+    // Alias para compatibilidad con el resto del código
+    const saturatedColors = saturatedClusters as typeof saturatedRaw
+
     const darkColors = Array.from(colorMap.entries())
       .map(([color, data]) => ({ color, ...data }))
       .filter(c => c.saturation <= 0.3)  // Grises, negros (baja saturación)
       .sort((a, b) => b.count - a.count)
     
-    logger.info(`[${jobId}] Found ${saturatedColors.length} saturated colors and ${darkColors.length} dark/gray colors in foreground`)
+    logger.info(`[${jobId}] Found ${saturatedRaw.length} saturated buckets → ${saturatedClusters.length} clusters and ${darkColors.length} dark/gray colors in foreground`)
     
     // Seleccionar colores diversos (diferentes hues) de los saturados
     const selectedColors: typeof saturatedColors = []
@@ -739,13 +771,20 @@ export const extractColorsFromForeground = async (
     for (const color of saturatedPool) {
       if (selectedColors.length >= maxSaturated) break
       
-      // Verificar que sea diferente de los ya seleccionados
+      // Verificar que sea diferente de los ya seleccionados.
+      // Un color es "diferente" si:
+      //   a) Su hue difiere > 18° del hue de cualquier color ya seleccionado, O
+      //   b) Su hue difiere > 8° Y su saturación o luminosidad difiere > 0.25
+      //      (captura pares como rosa fuerte / lavanda: mismo hue familiar pero muy distinta saturación)
       const isDifferent = selectedColors.every(selected => {
         const hueDiff = Math.min(
           Math.abs(color.hue - selected.hue),
           360 - Math.abs(color.hue - selected.hue)
         )
-        return hueDiff > 30  // Mínimo 30 grados de diferencia
+        if (hueDiff > 18) return true
+        const satDiff = Math.abs(color.saturation - selected.saturation)
+        const lightDiff = Math.abs(color.lightness - selected.lightness)
+        return hueDiff > 8 && (satDiff > 0.25 || lightDiff > 0.25)
       })
       
       if (isDifferent || selectedColors.length === 0) {
@@ -760,7 +799,9 @@ export const extractColorsFromForeground = async (
     }
 
     // Fusionar colores casi idénticos para evitar capas duplicadas (ej: varios azules muy cercanos).
-    const mergeDistance = targetMaxColors <= 4 ? 26 : 20
+    // Umbral conservador para no fusionar colores de la misma familia tonal pero perceptualmente distintos
+    // (ej: rosa fuerte #e0407a vs lavanda #e090c0).
+    const mergeDistance = targetMaxColors <= 4 ? 18 : 14
     const mergedColors: typeof selectedColors = []
     const byArea = [...selectedColors].sort((a, b) => b.count - a.count)
     for (const color of byArea) {

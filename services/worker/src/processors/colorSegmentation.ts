@@ -507,6 +507,22 @@ export const segmentByColorsWithSilhouette = async (
       }
     }
 
+    // Zona de proximidad oscura: dilatar los semillas confirmados de negro.
+    // El check neutralDark en classifyPixel SOLO aplica dentro de esta zona.
+    // Motivo: los píxeles de anti-alias de texto negro siempre están físicamente
+    // adyacentes al texto (dentro de la zona), mientras que colores desaturados como
+    // lavanda o cielos suaves quedan fuera → sin falsos positivos, sin umbral mágico.
+    let darkProximityZone: Uint8Array | null = null
+    if (crispEdges && darkIndex >= 0 && !strictVectorMode) {
+      const proxSeed = Buffer.alloc(width * height)
+      for (let i = 0; i < width * height; i++) {
+        proxSeed[i] = forcedDarkMask[i] === 1 ? 255 : 0
+      }
+      // Radio 7: cubre el anti-alias más ancho (≤4px) con margen de seguridad.
+      const proxDilated = await dilateMask(proxSeed, width, height, 7)
+      darkProximityZone = new Uint8Array(proxDilated)
+    }
+
     const classifyPixel = (pixelIndex: number): number => {
       const r = data[pixelIndex * 3]
       const g = data[pixelIndex * 3 + 1]
@@ -518,14 +534,15 @@ export const segmentByColorsWithSilhouette = async (
         bestDistances[pixelIndex] = 0
         return darkIndex
       }
-      // Lock extra para negros/antialias de texto en logos crisp:
-      // píxeles poco saturados y medios-oscuros deben quedarse en la capa oscura
-      // en vez de contaminar rosa/cian.
-      if (crispEdges && darkIndex >= 0) {
+
+      // Lock para anti-alias de texto: aplicado SOLO dentro de la zona de proximidad oscura.
+      // Dentro de esa zona cualquier píxel poco saturado es anti-alias del texto negro.
+      // Fuera de ella los colores desaturados (lavanda, cielo, etc.) se clasifican correctamente.
+      if (crispEdges && darkIndex >= 0 && darkProximityZone && darkProximityZone[pixelIndex] === 255) {
         const neutralDark =
-          (s < 0.18 && luminance < 190) ||
-          (s < 0.24 && luminance < 155) ||
-          (luminance < 105)
+          (s < 0.14 && luminance < 220) ||
+          (s < 0.22 && luminance < 115) ||
+          (luminance < 90)
         if (neutralDark) {
           bestDistances[pixelIndex] = 0
           return darkIndex
@@ -953,13 +970,13 @@ export const segmentByColorsWithSilhouette = async (
             ? redmeanDistance(r, g, b, currentColor.r, currentColor.g, currentColor.b)
             : bestNonDarkDist
           const shouldBeDark =
-            (s < 0.28 && lum < 170) ||
+            (inDarkHalo && s < 0.14 && lum < 220) ||
             (inDarkHalo && s < 0.68 && lum < 235 && distDark <= bestNonDarkDist + 95) ||
             (inDarkHalo && s < 0.72 && lum < 238 && distDark <= currentDist + 26) ||
-            (s < 0.24 && lum < 170 && distDark <= bestNonDarkDist + 34) ||
-            (s < 0.3 && lum < 178 && distDark <= bestNonDarkDist + 42) ||
-            (lum < 92 && distDark <= bestNonDarkDist + 40) ||
-            (distDark + 14 < bestNonDarkDist && lum < 165)
+            (s < 0.18 && lum < 155 && distDark <= bestNonDarkDist + 34) ||
+            (s < 0.22 && lum < 155 && distDark <= bestNonDarkDist + 42) ||
+            (lum < 85 && distDark <= bestNonDarkDist + 40) ||
+            (distDark + 14 < bestNonDarkDist && lum < 145)
           if (shouldBeDark) {
             assignments[i] = darkIndex
             bestDistances[i] = Math.min(bestDistances[i], distDark)
@@ -971,7 +988,7 @@ export const segmentByColorsWithSilhouette = async (
         if (bestNonDarkIdx < 0) continue
         const outsideDarkHalo = darkHalo[i] === 0
         const isVeryVividColor = s > 0.78 && l > 0.45 && lum > 170
-        const preserveAsDark = isLikelyDarkPixel(r, g, b, crispEdges) || (s < 0.2 && lum < 185)
+        const preserveAsDark = isLikelyDarkPixel(r, g, b, crispEdges) || (s < 0.14 && lum < 220)
         if (!preserveAsDark && outsideDarkHalo && isVeryVividColor && bestNonDarkDist + 32 < distDark) {
           assignments[i] = bestNonDarkIdx
           bestDistances[i] = Math.min(bestDistances[i], bestNonDarkDist)

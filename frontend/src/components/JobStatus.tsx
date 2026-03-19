@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CheckCircle, Clock, AlertCircle, Download } from 'lucide-react'
 
 interface JobStatusProps {
@@ -30,6 +30,7 @@ export default function JobStatus({
   const [job, setJob] = useState<Job | null>(null)
   const [loading, setLoading] = useState(true)
   const [colors, setColors] = useState<string[]>([])
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     if (!jobId) return
@@ -62,6 +63,15 @@ export default function JobStatus({
           if (onColorsExtracted && data.dominantColors && data.dominantColors.length > 0) {
             onColorsExtracted(data.dominantColors)
           }
+
+          // Detener el polling cuando el job llega a un estado terminal
+          const terminalStatus = data.status.toLowerCase()
+          if (terminalStatus === 'completed' || terminalStatus === 'failed') {
+            if (intervalRef.current) {
+              clearInterval(intervalRef.current)
+              intervalRef.current = null
+            }
+          }
         }
       } catch (error) {
         console.error('Error fetching job status:', error)
@@ -74,11 +84,16 @@ export default function JobStatus({
     fetchStatus()
 
     // Poll cada 2 segundos mientras no esté completado
-    const interval = setInterval(() => {
+    intervalRef.current = setInterval(() => {
       fetchStatus()
     }, 2000)
 
-    return () => clearInterval(interval)
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
+    }
   }, [jobId, onStatusChange, onColorsExtracted])
 
   if (loading) {
